@@ -1,5 +1,5 @@
 from django.urls import path, include
-from rest_framework.DefaultRouter import DefaultRouter
+from rest_framework.routers import DefaultRouter  # <--- FIXED IMPORT
 from .views import KnowledgeNodeViewSet, ResourceViewSet, ProgramContextViewSet
 
 router = DefaultRouter()
