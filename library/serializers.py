@@ -1,20 +1,21 @@
+import re
 from rest_framework import serializers
-from .models import KnowledgeNode, Resource, ProgramContext
+from django.contrib.auth.models import User
+from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress
 
-# --- 1. Program Context (Tags) ---
 class ProgramContextSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProgramContext
         fields = ['id', 'name', 'description']
 
-# --- 2. Resources (The Google Drive Logic) ---
 class ResourceSerializer(serializers.ModelSerializer):
     contexts = ProgramContextSerializer(many=True, read_only=True)
     context_ids = serializers.PrimaryKeyRelatedField(
         queryset=ProgramContext.objects.all(), write_only=True, many=True, source='contexts'
     )
     
-    # NEW: Computed fields for the Frontend
+    # Smart Inputs/Outputs
+    google_drive_link = serializers.CharField(write_only=True, required=False, allow_blank=True)
     preview_link = serializers.SerializerMethodField()
 
     class Meta:
@@ -22,28 +23,55 @@ class ResourceSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'resource_type', 'node', 
             'contexts', 'context_ids', 
-            'google_drive_id', 'external_url', 'content_text', 
-            'preview_link', 'created_at'
+            'google_drive_id', 'google_drive_link',
+            'external_url', 'content_text', 
+            'preview_link', 'created_at', 'order'
         ]
 
+    def validate(self, attrs):
+        # Extract ID from pasted Google Drive Link
+        drive_link = attrs.pop('google_drive_link', None)
+        if drive_link:
+            match = re.search(r'[-\w]{25,}', drive_link)
+            attrs['google_drive_id'] = match.group() if match else drive_link
+        return attrs
+
     def get_preview_link(self, obj):
-        # Automatically generates a viewable link for the App
         if obj.resource_type == 'PDF' and obj.google_drive_id:
             return f"https://drive.google.com/file/d/{obj.google_drive_id}/preview"
         if obj.resource_type == 'VIDEO' and obj.external_url:
             return obj.external_url
         return None
 
-# --- 3. Knowledge Tree ---
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     resource_count = serializers.IntegerField(read_only=True, required=False)
 
     class Meta:
         model = KnowledgeNode
-        fields = ['id', 'name', 'node_type', 'parent', 'order', 'is_active', 'children', 'resource_count']
+        fields = [
+            'id', 'name', 'node_type', 'parent', 
+            'order', 'thumbnail_url', 'is_active', 
+            'children', 'resource_count'
+        ]
 
     def get_children(self, obj):
         if obj.children.exists():
             return KnowledgeNodeSerializer(obj.children.all(), many=True).data
         return []
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'password']
+        extra_kwargs = {'password': {'write_only': True}}
+
+    def create(self, validated_data):
+        # Secure password hashing
+        return User.objects.create_user(**validated_data)
+
+class StudentProgressSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StudentProgress
+        fields = ['id', 'resource', 'is_completed', 'last_accessed']
+        read_only_fields = ['user']
