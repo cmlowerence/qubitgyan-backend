@@ -16,6 +16,7 @@ class ProgramContextViewSet(viewsets.ModelViewSet):
     queryset = ProgramContext.objects.all()
     serializer_class = ProgramContextSerializer
     permission_classes = [IsAdminOrReadOnly]
+    pagination_class = None
 
 class ResourceViewSet(viewsets.ModelViewSet):
     queryset = Resource.objects.all().order_by('order')
