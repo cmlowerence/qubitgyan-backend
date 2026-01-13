@@ -18,7 +18,7 @@ class ProgramContextViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
 
 class ResourceViewSet(viewsets.ModelViewSet):
-    queryset = Resource.objects.all()
+    queryset = Resource.objects.all().order_class('order')
     serializer_class = ResourceSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter]
@@ -29,18 +29,22 @@ class ResourceViewSet(viewsets.ModelViewSet):
         node_id = self.request.query_params.get('node', None)
         if node_id:
             queryset = queryset.filter(node_id=node_id)
+        return queryset.order_by('order')
 
-        context_name = self.request.query_params.get('context', None)
-        if context_name:
-            queryset = queryset.filter(contexts__name__icontains=context_name)
-
-        return queryset
-
-    # FUTURE USE: Resource Upload Handling
-    def perform_create(self, serializer):
-        # You can add logic here to handle file processing or 
-        # auto-assigning contexts based on the node
-        serializer.save()
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser])
+    def reorder(self, request):
+        """
+        Expects a list of IDs in the new desired order.
+        Updates the 'order' field for each resource accordingly.
+        """
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        for index, resource_id in enumerate(ids):
+            Resource.objects.filter(id=resource_id).update(order=index)
+            
+        return Response({'status': 'order updated'}, status=status.HTTP_200_OK)
 
 class KnowledgeNodeViewSet(viewsets.ModelViewSet):
     serializer_class = KnowledgeNodeSerializer
@@ -49,27 +53,16 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
     search_fields = ['name']
 
     def get_queryset(self):
-        # Base queryset with annotations
         base_qs = KnowledgeNode.objects.annotate(resource_count=Count('resources'))
-
-        # FIX: Only filter for roots if we are LISTING (GET /nodes/)
-        # and not asking for 'all'.
-        # This allows 'retrieve', 'update', and 'destroy' to find child nodes by ID.
+        
+        # If we are fetching a specific ID (retrieve, update, destroy), 
+        # do not filter by parent__isnull to avoid 404s on children.
         if self.action == 'list':
             if self.request.query_params.get('all', 'false').lower() == 'true':
                 return base_qs
             return base_qs.filter(parent__isnull=True)
         
-        # For individual node actions (ID 14 etc), return everything
         return base_qs
-
-    # FUTURE USE: Bulk toggle status or Reordering
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAdminUser])
-    def toggle_status(self, request, pk=None):
-        node = self.get_object()
-        node.is_active = not node.is_active
-        node.save()
-        return Response({'status': 'visibility toggled', 'is_active': node.is_active})
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
