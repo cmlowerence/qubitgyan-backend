@@ -18,7 +18,7 @@ class ProgramContextViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
 
 class ResourceViewSet(viewsets.ModelViewSet):
-    queryset = Resource.objects.all().order_class('order')
+    queryset = Resource.objects.all().order_by('order')
     serializer_class = ResourceSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter]
@@ -33,10 +33,6 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def reorder(self, request):
-        """
-        Expects a list of IDs in the new desired order.
-        Updates the 'order' field for each resource accordingly.
-        """
         ids = request.data.get('ids', [])
         if not ids:
             return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
@@ -55,8 +51,6 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         base_qs = KnowledgeNode.objects.annotate(resource_count=Count('resources'))
         
-        # If we are fetching a specific ID (retrieve, update, destroy), 
-        # do not filter by parent__isnull to avoid 404s on children.
         if self.action == 'list':
             if self.request.query_params.get('all', 'false').lower() == 'true':
                 return base_qs
@@ -83,23 +77,9 @@ class StudentProgressViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-        
+
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser])
     def all_admin_view(self, request):
-        progress = StudentProgress.objects.all().select_related('user', 'resource')
-        data = []
-        for p in progress:
-            data.append({
-                "id": p.id,
-                "user_details": {"username": p.user.username, "email": p.user.email},
-                "resource_details": {"title": p.resource.title, "resource_type": p.resource.resource_type},
-                "is_completed": p.is_completed,
-                "last_accessed": p.last_accessed
-            })
-        return Response(data)
-     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser])
-    def all_admin_view(self, request):
-        # Optimizing query with select_related to get User and Resource data in one go
         progress = StudentProgress.objects.all().select_related('user', 'resource')
         data = []
         for p in progress:
@@ -117,19 +97,6 @@ class StudentProgressViewSet(viewsets.ModelViewSet):
                 "last_accessed": p.last_accessed
             })
         return Response(data)
-
-
-class DashboardStatsView(APIView):
-    permission_classes = [permissions.IsAdminUser]
-
-    def get(self, request):
-        return Response({
-            "total_nodes": KnowledgeNode.objects.count(),
-            "active_users": User.objects.count(),
-            "total_resources": Resource.objects.count(),
-            "storage_used": "N/A", 
-        })
-
 
 class GlobalSearchView(APIView):
     permission_classes = [permissions.IsAdminUser]
@@ -160,7 +127,7 @@ class GlobalSearchView(APIView):
                 "id": r.id,
                 "title": r.title,
                 "subtitle": f"File: {r.resource_type}",
-                "url": f"/admin/tree/{r.node}" # Redirects to parent topic
+                "url": f"/admin/tree/{r.node}"
             })
 
         # 3. Search Users
@@ -175,3 +142,14 @@ class GlobalSearchView(APIView):
             })
 
         return Response(results)
+
+class DashboardStatsView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        return Response({
+            "total_nodes": KnowledgeNode.objects.count(),
+            "active_users": User.objects.count(),
+            "total_resources": Resource.objects.count(),
+            "storage_used": "N/A", 
+        })
