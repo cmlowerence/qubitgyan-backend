@@ -83,6 +83,41 @@ class StudentProgressViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+        
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser])
+    def all_admin_view(self, request):
+        progress = StudentProgress.objects.all().select_related('user', 'resource')
+        data = []
+        for p in progress:
+            data.append({
+                "id": p.id,
+                "user_details": {"username": p.user.username, "email": p.user.email},
+                "resource_details": {"title": p.resource.title, "resource_type": p.resource.resource_type},
+                "is_completed": p.is_completed,
+                "last_accessed": p.last_accessed
+            })
+        return Response(data)
+     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAdminUser])
+    def all_admin_view(self, request):
+        # Optimizing query with select_related to get User and Resource data in one go
+        progress = StudentProgress.objects.all().select_related('user', 'resource')
+        data = []
+        for p in progress:
+            data.append({
+                "id": p.id,
+                "user_details": {
+                    "username": p.user.username, 
+                    "email": p.user.email
+                },
+                "resource_details": {
+                    "title": p.resource.title, 
+                    "resource_type": p.resource.resource_type
+                },
+                "is_completed": p.is_completed,
+                "last_accessed": p.last_accessed
+            })
+        return Response(data)
+
 
 class DashboardStatsView(APIView):
     permission_classes = [permissions.IsAdminUser]
@@ -94,3 +129,49 @@ class DashboardStatsView(APIView):
             "total_resources": Resource.objects.count(),
             "storage_used": "N/A", 
         })
+
+
+class GlobalSearchView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        query = request.query_params.get('q', '')
+        if len(query) < 2:
+            return Response({"results": []})
+
+        results = []
+
+        # 1. Search Knowledge Nodes
+        nodes = KnowledgeNode.objects.filter(name__icontains=query)[:5]
+        for n in nodes:
+            results.append({
+                "type": "NODE",
+                "id": n.id,
+                "title": n.name,
+                "subtitle": f"Type: {n.node_type}",
+                "url": f"/admin/tree/{n.id}"
+            })
+
+        # 2. Search Resources
+        resources = Resource.objects.filter(title__icontains=query)[:5]
+        for r in resources:
+            results.append({
+                "type": "RESOURCE",
+                "id": r.id,
+                "title": r.title,
+                "subtitle": f"File: {r.resource_type}",
+                "url": f"/admin/tree/{r.node}" # Redirects to parent topic
+            })
+
+        # 3. Search Users
+        users = User.objects.filter(username__icontains=query)[:5]
+        for u in users:
+            results.append({
+                "type": "USER",
+                "id": u.id,
+                "title": u.username,
+                "subtitle": u.email,
+                "url": "/admin/users"
+            })
+
+        return Response(results)

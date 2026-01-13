@@ -8,9 +8,11 @@ from rest_framework_simplejwt.views import (
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/v1/', include('library.urls')),
     
-    # AUTHENTICATION ENDPOINTS
+    # This points to the file above - now including Global Search
+    path('api/v1/', include('library.urls')), 
+    
+    # AUTHENTICATION ENDPOINTS (PRESERVED)
     # Login (Send Username/Password -> Get Token):
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     # Refresh (Get new token when old one expires):

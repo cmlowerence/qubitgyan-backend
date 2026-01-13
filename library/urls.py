@@ -3,7 +3,8 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     KnowledgeNodeViewSet, ResourceViewSet, 
     ProgramContextViewSet, UserViewSet, 
-    StudentProgressViewSet, DashboardStatsView
+    StudentProgressViewSet, DashboardStatsView,
+    GlobalSearchView  # The new addition
 )
 
 router = DefaultRouter()
@@ -16,4 +17,6 @@ router.register(r'progress', StudentProgressViewSet, basename='progress')
 urlpatterns = [
     path('', include(router.urls)),
     path('stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
+    # Add this here so it's accessible at /api/v1/global-search/
+    path('global-search/', GlobalSearchView.as_view(), name='global-search'),
 ]
