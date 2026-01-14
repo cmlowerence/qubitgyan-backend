@@ -80,8 +80,7 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         return []
 
 class UserSerializer(serializers.ModelSerializer):
-    # CHANGED: Use MethodFields for safety. 
-    # This prevents the 500 Error if the UserProfile is missing.
+    # Safe Method Fields
     created_by = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
     is_suspended = serializers.SerializerMethodField()
@@ -95,36 +94,30 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
-    # --- SAFE GETTERS ---
+    # --- 100% SAFE GETTERS ---
     def get_created_by(self, obj):
-        try:
-            return obj.profile.created_by.username if obj.profile.created_by else None
-        except UserProfile.DoesNotExist:
-            return None
+        # Use getattr to safely check if 'profile' exists on the user object
+        profile = getattr(obj, 'profile', None)
+        if profile and profile.created_by:
+            return profile.created_by.username
+        return None
 
     def get_avatar_url(self, obj):
-        try:
-            return obj.profile.avatar_url
-        except UserProfile.DoesNotExist:
-            return None
+        profile = getattr(obj, 'profile', None)
+        return profile.avatar_url if profile else None
 
     def get_is_suspended(self, obj):
-        try:
-            return obj.profile.is_suspended
-        except UserProfile.DoesNotExist:
-            return False
-    # --------------------
+        profile = getattr(obj, 'profile', None)
+        return profile.is_suspended if profile else False
+    # -------------------------
 
     def create(self, validated_data):
         profile_data = validated_data.pop('profile', {})
         user = User.objects.create_user(**validated_data)
-        # Create profile safely
         UserProfile.objects.create(user=user, **profile_data)
         return user
 
     def update(self, instance, validated_data):
-        # We manually check for 'profile' in the initial data because 
-        # MethodFields are read-only by default
         profile_data = self.initial_data.get('profile', {})
         
         for attr, value in validated_data.items():
@@ -134,7 +127,6 @@ class UserSerializer(serializers.ModelSerializer):
                 setattr(instance, attr, value)
         instance.save()
 
-        # Update or Create Profile
         if profile_data:
             profile, _ = UserProfile.objects.get_or_create(user=instance)
             if 'avatar_url' in profile_data:

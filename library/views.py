@@ -85,8 +85,14 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def me(self, request):
+        # SELF-HEALING: If this user has no profile, create one now.
+        # This fixes the issue for existing Superusers.
+        if not hasattr(request.user, 'profile'):
+            UserProfile.objects.create(user=request.user)
+            
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
+
 
     def perform_create(self, serializer):
         """
