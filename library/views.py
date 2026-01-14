@@ -23,14 +23,31 @@ class ResourceViewSet(viewsets.ModelViewSet):
     serializer_class = ResourceSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter]
-    search_fields = ['title', 'contexts__name']
+    # Added node__name to allow searching by folder name
+    search_fields = ['title', 'contexts__name', 'node__name']
 
     def get_queryset(self):
         queryset = Resource.objects.all()
+        
+        # 1. Filter by specific folder (Existing)
         node_id = self.request.query_params.get('node', None)
         if node_id:
-            queryset = queryset.filter(node_id=node_id)
-        return queryset.order_by('order')
+            queryset = queryset.filter(node_id=node_id).order_by('order')
+            return queryset
+
+        # 2. Global Filters (New for Stage 5)
+        # Filter by Resource Type (PDF, VIDEO, LINK)
+        r_type = self.request.query_params.get('type', None)
+        if r_type and r_type != 'ALL':
+            queryset = queryset.filter(resource_type=r_type)
+
+        # Filter by Context (JEE, NEET)
+        context_id = self.request.query_params.get('context', None)
+        if context_id and context_id != 'ALL':
+            queryset = queryset.filter(contexts__id=context_id)
+
+        # Default ordering for global list: Newest first
+        return queryset.order_by('-created_at')
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser])
     def reorder(self, request):
@@ -154,11 +171,9 @@ class DashboardStatsView(APIView):
         total_users = User.objects.count()
 
         # 2. Resource Distribution (Pie Chart Data)
-        # Groups by type: [{'resource_type': 'PDF', 'count': 12}, ...]
         type_distribution = Resource.objects.values('resource_type').annotate(count=Count('id'))
 
         # 3. Subject Leaders (Bar Chart Data)
-        # Top 5 Folders with the most resources
         top_subjects = KnowledgeNode.objects.filter(node_type='TOPIC') \
             .annotate(resource_count=Count('resources')) \
             .order_by('-resource_count')[:5] \
