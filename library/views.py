@@ -148,9 +148,35 @@ class DashboardStatsView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
+        # 1. Basic Counters
+        total_nodes = KnowledgeNode.objects.count()
+        total_resources = Resource.objects.count()
+        total_users = User.objects.count()
+
+        # 2. Resource Distribution (Pie Chart Data)
+        # Groups by type: [{'resource_type': 'PDF', 'count': 12}, ...]
+        type_distribution = Resource.objects.values('resource_type').annotate(count=Count('id'))
+
+        # 3. Subject Leaders (Bar Chart Data)
+        # Top 5 Folders with the most resources
+        top_subjects = KnowledgeNode.objects.filter(node_type='TOPIC') \
+            .annotate(resource_count=Count('resources')) \
+            .order_by('-resource_count')[:5] \
+            .values('name', 'resource_count')
+
+        # 4. Recent Activity (The "What's New" list)
+        recent_resources = Resource.objects.all().order_by('-created_at')[:5]
+        recent_serialized = ResourceSerializer(recent_resources, many=True).data
+
         return Response({
-            "total_nodes": KnowledgeNode.objects.count(),
-            "active_users": User.objects.count(),
-            "total_resources": Resource.objects.count(),
-            "storage_used": "N/A", 
+            "counts": {
+                "nodes": total_nodes,
+                "users": total_users,
+                "resources": total_resources,
+            },
+            "charts": {
+                "distribution": type_distribution,
+                "top_subjects": top_subjects
+            },
+            "recent_activity": recent_serialized
         })

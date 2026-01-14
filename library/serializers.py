@@ -1,7 +1,7 @@
 import re
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from django.db.models import Count # <--- 1. Added this import
+from django.db.models import Count 
 from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress
 
 class ProgramContextSerializer(serializers.ModelSerializer):
@@ -15,6 +15,9 @@ class ResourceSerializer(serializers.ModelSerializer):
         queryset=ProgramContext.objects.all(), write_only=True, many=True, source='contexts'
     )
     
+    # NEW: Add this to fetch the parent folder's name safely
+    node_name = serializers.ReadOnlyField(source='node.name')
+
     # Smart Inputs/Outputs
     google_drive_link = serializers.CharField(write_only=True, required=False, allow_blank=True)
     preview_link = serializers.SerializerMethodField()
@@ -22,7 +25,8 @@ class ResourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resource
         fields = [
-            'id', 'title', 'resource_type', 'node', 
+            'id', 'title', 'resource_type', 
+            'node', 'node_name', # Added node_name here
             'contexts', 'context_ids', 
             'google_drive_id', 'google_drive_link',
             'external_url', 'content_text', 
@@ -44,19 +48,16 @@ class ResourceSerializer(serializers.ModelSerializer):
             return obj.external_url
         return None
 
-# 2. Added Helper Serializer for the children list (Prevents recursion issues)
+# Helper Serializer for the children list (Prevents recursion issues)
 class ChildNodeSerializer(serializers.ModelSerializer):
     resource_count = serializers.IntegerField(read_only=True)
-    # Optional: If you want to show "Items" count too, uncomment the next line and the annotation below
-    # children_count = serializers.IntegerField(source='children.count', read_only=True)
-
+    
     class Meta:
         model = KnowledgeNode
         fields = [
             'id', 'name', 'node_type', 'parent', 
             'order', 'thumbnail_url', 'is_active', 
             'resource_count' 
-            # We do NOT include 'children' here to keep the list flat and fast
         ]
 
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
