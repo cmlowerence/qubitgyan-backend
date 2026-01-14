@@ -2,7 +2,7 @@ import re
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.db.models import Count 
-from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress
+from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
 
 class ProgramContextSerializer(serializers.ModelSerializer):
     class Meta:
@@ -88,15 +88,53 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         return []
 
 class UserSerializer(serializers.ModelSerializer):
+    # Profile Fields (Read/Write mapped to UserProfile model)
+    created_by = serializers.CharField(source='profile.created_by.username', read_only=True)
+    avatar_url = serializers.URLField(source='profile.avatar_url', required=False, allow_null=True)
+    is_suspended = serializers.BooleanField(source='profile.is_suspended', required=False)
+
     class Meta:
         model = User
-        # ADDED: 'is_superuser' field so Frontend knows who the Boss is
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'password']
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name', 
+            'is_staff', 'is_superuser', 'password',
+            'created_by', 'avatar_url', 'is_suspended'
+        ]
         extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):
-        # Secure password hashing
-        return User.objects.create_user(**validated_data)
+        # Extract profile data if present (nested source fields come in as 'profile' dict)
+        profile_data = validated_data.pop('profile', {})
+        
+        # Create the standard User
+        user = User.objects.create_user(**validated_data)
+        
+        # Create the Profile (The ViewSet will handle setting 'created_by' logic separately if needed)
+        UserProfile.objects.create(user=user, **profile_data)
+        
+        return user
+
+    def update(self, instance, validated_data):
+        # Extract profile data
+        profile_data = validated_data.pop('profile', {})
+        
+        # Update standard User fields
+        for attr, value in validated_data.items():
+            if attr == 'password':
+                instance.set_password(value)
+            else:
+                setattr(instance, attr, value)
+        instance.save()
+
+        # Update Profile fields
+        if profile_data:
+            # Safe get_or_create to ensure profile exists
+            profile, _ = UserProfile.objects.get_or_create(user=instance)
+            for attr, value in profile_data.items():
+                setattr(profile, attr, value)
+            profile.save()
+            
+        return instance
 
 class StudentProgressSerializer(serializers.ModelSerializer):
     class Meta:

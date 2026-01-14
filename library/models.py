@@ -1,6 +1,24 @@
 from django.db import models
 from django.contrib.auth.models import User
 
+class UserProfile(models.Model):
+    """
+    Extension of the User model to store extra metadata.
+    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    
+    # Who made this account? (For Admins to track)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_users')
+    
+    # Custom Avatar (URL for now to keep it simple without media storage setup)
+    avatar_url = models.URLField(blank=True, null=True, help_text="Link to profile picture")
+    
+    # Account Status
+    is_suspended = models.BooleanField(default=False, help_text="If true, user cannot log in")
+
+    def __str__(self):
+        return f"Profile for {self.user.username}"
+
 class ProgramContext(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True, null=True)

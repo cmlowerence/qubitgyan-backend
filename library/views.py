@@ -1,11 +1,11 @@
-from rest_framework import viewsets, filters, permissions, status
+from rest_framework import viewsets, filters, permissions, status, exceptions
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.db.models import Count
 from django.contrib.auth.models import User
 
-from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress
+from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
 from .serializers import (
     KnowledgeNodeSerializer, ResourceSerializer, 
     ProgramContextSerializer, UserSerializer, StudentProgressSerializer
@@ -28,13 +28,11 @@ class ResourceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = Resource.objects.all()
         
-        # Filter by specific folder
         node_id = self.request.query_params.get('node', None)
         if node_id:
             queryset = queryset.filter(node_id=node_id).order_by('order')
             return queryset
 
-        # Global Filters
         r_type = self.request.query_params.get('type', None)
         if r_type and r_type != 'ALL':
             queryset = queryset.filter(resource_type=r_type)
@@ -64,32 +62,75 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         base_qs = KnowledgeNode.objects.annotate(resource_count=Count('resources'))
-        
         if self.action == 'list':
             if self.request.query_params.get('all', 'false').lower() == 'true':
                 return base_qs
             return base_qs.filter(parent__isnull=True)
-        
         return base_qs
 
 class UserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAdminUser]
+
+    def get_queryset(self):
+        """
+        SECURITY FILTER:
+        - Superusers see ALL users.
+        - Standard Admins see ONLY Students (is_staff=False).
+        """
+        user = self.request.user
+        if user.is_superuser:
+            return User.objects.all().order_by('-date_joined')
+        return User.objects.filter(is_staff=False).order_by('-date_joined')
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def me(self, request):
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
 
+    def perform_create(self, serializer):
+        """
+        CREATION LOGIC:
+        - Track 'created_by'.
+        - Prevent Standard Admins from creating new Admins.
+        """
+        is_creating_admin = serializer.validated_data.get('is_staff', False)
+        
+        # 1. Security Check
+        if is_creating_admin and not self.request.user.is_superuser:
+            raise exceptions.PermissionDenied("Action Forbidden: Only Superusers can create Administrator accounts.")
+
+        # 2. Save User
+        user = serializer.save()
+
+        # 3. Update Profile Metadata (handled manually to ensure security)
+        # We use get_or_create to be safe, though create() in serializer should have made it.
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        profile.created_by = self.request.user
+        profile.save()
+
     def destroy(self, request, *args, **kwargs):
+        """
+        DELETION LOGIC:
+        - Prevent deletion of Superusers.
+        - Prevent Standard Admins from deleting other Admins.
+        """
         instance = self.get_object()
-        # Prevent deletion of Superuser
+        
+        # 1. Protect Superusers
         if instance.is_superuser:
             return Response(
                 {"error": "Action Forbidden: Cannot delete the Superuser account."},
                 status=status.HTTP_403_FORBIDDEN
             )
+
+        # 2. Protect Admins from Non-Superusers
+        if instance.is_staff and not request.user.is_superuser:
+             return Response(
+                {"error": "Action Forbidden: Only Superusers can delete Administrator accounts."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
         return super().destroy(request, *args, **kwargs)
 
 class StudentProgressViewSet(viewsets.ModelViewSet):
@@ -154,9 +195,12 @@ class GlobalSearchView(APIView):
                 "url": f"/admin/tree/{r.node}"
             })
 
-        # 3. Search Users
-        users = User.objects.filter(username__icontains=query)[:5]
-        for u in users:
+        # 3. Search Users (Respect Visibility Rules)
+        users_qs = User.objects.filter(username__icontains=query)
+        if not request.user.is_superuser:
+            users_qs = users_qs.filter(is_staff=False) # Standard Admins only search Students
+            
+        for u in users_qs[:5]:
             results.append({
                 "type": "USER",
                 "id": u.id,
@@ -171,32 +215,27 @@ class DashboardStatsView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        # 1. Basic Counters (Split Admins/Students)
         total_nodes = KnowledgeNode.objects.count()
         total_resources = Resource.objects.count()
         
-        # Separate counts
         total_admins = User.objects.filter(is_staff=True).count()
         total_students = User.objects.filter(is_staff=False).count()
 
-        # 2. Resource Distribution
         type_distribution = Resource.objects.values('resource_type').annotate(count=Count('id'))
 
-        # 3. Subject Leaders
         top_subjects = KnowledgeNode.objects.filter(node_type='TOPIC') \
             .annotate(resource_count=Count('resources')) \
             .order_by('-resource_count')[:5] \
             .values('name', 'resource_count')
 
-        # 4. Recent Activity
         recent_resources = Resource.objects.all().order_by('-created_at')[:5]
         recent_serialized = ResourceSerializer(recent_resources, many=True).data
 
         return Response({
             "counts": {
                 "nodes": total_nodes,
-                "admins": total_admins,    # New Field
-                "students": total_students, # New Field
+                "admins": total_admins,
+                "students": total_students,
                 "resources": total_resources,
             },
             "charts": {
