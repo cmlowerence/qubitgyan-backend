@@ -2,6 +2,7 @@ import re
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.db.models import Count 
+from django.core.exceptions import ObjectDoesNotExist # Import this specifically
 from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
 
 class ProgramContextSerializer(serializers.ModelSerializer):
@@ -80,7 +81,6 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         return []
 
 class UserSerializer(serializers.ModelSerializer):
-    # Safe Method Fields
     created_by = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
     is_suspended = serializers.SerializerMethodField()
@@ -94,22 +94,29 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
-    # --- 100% SAFE GETTERS ---
+    # --- CRASH PROOF GETTERS ---
     def get_created_by(self, obj):
-        # Use getattr to safely check if 'profile' exists on the user object
-        profile = getattr(obj, 'profile', None)
-        if profile and profile.created_by:
-            return profile.created_by.username
-        return None
+        try:
+            # Try to access the profile
+            if obj.profile.created_by:
+                return obj.profile.created_by.username
+            return None
+        except (ObjectDoesNotExist, AttributeError):
+            # If profile is missing, return None (Don't crash)
+            return None
 
     def get_avatar_url(self, obj):
-        profile = getattr(obj, 'profile', None)
-        return profile.avatar_url if profile else None
+        try:
+            return obj.profile.avatar_url
+        except (ObjectDoesNotExist, AttributeError):
+            return None
 
     def get_is_suspended(self, obj):
-        profile = getattr(obj, 'profile', None)
-        return profile.is_suspended if profile else False
-    # -------------------------
+        try:
+            return obj.profile.is_suspended
+        except (ObjectDoesNotExist, AttributeError):
+            return False
+    # ---------------------------
 
     def create(self, validated_data):
         profile_data = validated_data.pop('profile', {})
