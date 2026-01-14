@@ -1,6 +1,7 @@
 import re
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from django.db.models import Count # <--- 1. Added this import
 from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress
 
 class ProgramContextSerializer(serializers.ModelSerializer):
@@ -43,6 +44,21 @@ class ResourceSerializer(serializers.ModelSerializer):
             return obj.external_url
         return None
 
+# 2. Added Helper Serializer for the children list (Prevents recursion issues)
+class ChildNodeSerializer(serializers.ModelSerializer):
+    resource_count = serializers.IntegerField(read_only=True)
+    # Optional: If you want to show "Items" count too, uncomment the next line and the annotation below
+    # children_count = serializers.IntegerField(source='children.count', read_only=True)
+
+    class Meta:
+        model = KnowledgeNode
+        fields = [
+            'id', 'name', 'node_type', 'parent', 
+            'order', 'thumbnail_url', 'is_active', 
+            'resource_count' 
+            # We do NOT include 'children' here to keep the list flat and fast
+        ]
+
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     resource_count = serializers.IntegerField(read_only=True, required=False)
@@ -56,8 +72,14 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         ]
 
     def get_children(self, obj):
+        """
+        Manually fetch children AND annotate them with resource_count.
+        This fixes the '0 Resources' bug on the folder cards.
+        """
         if obj.children.exists():
-            return KnowledgeNodeSerializer(obj.children.all(), many=True).data
+            # Force the annotation: Count resources for EACH child
+            children_qs = obj.children.all().annotate(resource_count=Count('resources'))
+            return ChildNodeSerializer(children_qs, many=True).data
         return []
 
 class UserSerializer(serializers.ModelSerializer):
