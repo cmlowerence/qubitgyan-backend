@@ -48,40 +48,45 @@ class ResourceSerializer(serializers.ModelSerializer):
             return obj.external_url
         return None
 
-# Helper Serializer for the children list (Prevents recursion issues)
 class ChildNodeSerializer(serializers.ModelSerializer):
     resource_count = serializers.IntegerField(read_only=True)
-    
+    items_count = serializers.IntegerField(read_only=True) # <--- New Field
+
     class Meta:
         model = KnowledgeNode
         fields = [
             'id', 'name', 'node_type', 'parent', 
             'order', 'thumbnail_url', 'is_active', 
-            'resource_count' 
+            'resource_count',
+            'items_count' # <--- Add to fields
         ]
 
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     resource_count = serializers.IntegerField(read_only=True, required=False)
+    items_count = serializers.IntegerField(read_only=True, required=False)
 
     class Meta:
         model = KnowledgeNode
         fields = [
             'id', 'name', 'node_type', 'parent', 
             'order', 'thumbnail_url', 'is_active', 
-            'children', 'resource_count'
+            'children', 'resource_count', 'items_count'
         ]
 
     def get_children(self, obj):
         """
-        Manually fetch children AND annotate them with resource_count.
-        This fixes the '0 Resources' bug on the folder cards.
+        Fetch children and annotate with BOTH resource_count and items_count.
+        distinct=True is required to prevent multiplication errors when counting two relations.
         """
         if obj.children.exists():
-            # Force the annotation: Count resources for EACH child
-            children_qs = obj.children.all().annotate(resource_count=Count('resources'))
+            children_qs = obj.children.all().annotate(
+                resource_count=Count('resources', distinct=True),
+                items_count=Count('children', distinct=True) # <--- Calculate children count
+            )
             return ChildNodeSerializer(children_qs, many=True).data
         return []
+
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
