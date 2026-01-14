@@ -15,10 +15,7 @@ class ResourceSerializer(serializers.ModelSerializer):
         queryset=ProgramContext.objects.all(), write_only=True, many=True, source='contexts'
     )
     
-    # Fetch parent folder name safely
     node_name = serializers.ReadOnlyField(source='node.name')
-
-    # Smart Inputs/Outputs
     google_drive_link = serializers.CharField(write_only=True, required=False, allow_blank=True)
     preview_link = serializers.SerializerMethodField()
 
@@ -34,7 +31,6 @@ class ResourceSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        # Extract ID from pasted Google Drive Link
         drive_link = attrs.pop('google_drive_link', None)
         if drive_link:
             match = re.search(r'[-\w]{25,}', drive_link)
@@ -75,10 +71,6 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         ]
 
     def get_children(self, obj):
-        """
-        Fetch children and annotate with BOTH resource_count and items_count.
-        distinct=True is required to prevent multiplication errors when counting two relations.
-        """
         if obj.children.exists():
             children_qs = obj.children.all().annotate(
                 resource_count=Count('resources', distinct=True),
@@ -88,10 +80,11 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         return []
 
 class UserSerializer(serializers.ModelSerializer):
-    # Profile Fields (Read/Write mapped to UserProfile model)
-    created_by = serializers.CharField(source='profile.created_by.username', read_only=True)
-    avatar_url = serializers.URLField(source='profile.avatar_url', required=False, allow_null=True)
-    is_suspended = serializers.BooleanField(source='profile.is_suspended', required=False)
+    # CHANGED: Use MethodFields for safety. 
+    # This prevents the 500 Error if the UserProfile is missing.
+    created_by = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+    is_suspended = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -102,23 +95,38 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
+    # --- SAFE GETTERS ---
+    def get_created_by(self, obj):
+        try:
+            return obj.profile.created_by.username if obj.profile.created_by else None
+        except UserProfile.DoesNotExist:
+            return None
+
+    def get_avatar_url(self, obj):
+        try:
+            return obj.profile.avatar_url
+        except UserProfile.DoesNotExist:
+            return None
+
+    def get_is_suspended(self, obj):
+        try:
+            return obj.profile.is_suspended
+        except UserProfile.DoesNotExist:
+            return False
+    # --------------------
+
     def create(self, validated_data):
-        # Extract profile data if present (nested source fields come in as 'profile' dict)
         profile_data = validated_data.pop('profile', {})
-        
-        # Create the standard User
         user = User.objects.create_user(**validated_data)
-        
-        # Create the Profile (The ViewSet will handle setting 'created_by' logic separately if needed)
+        # Create profile safely
         UserProfile.objects.create(user=user, **profile_data)
-        
         return user
 
     def update(self, instance, validated_data):
-        # Extract profile data
-        profile_data = validated_data.pop('profile', {})
+        # We manually check for 'profile' in the initial data because 
+        # MethodFields are read-only by default
+        profile_data = self.initial_data.get('profile', {})
         
-        # Update standard User fields
         for attr, value in validated_data.items():
             if attr == 'password':
                 instance.set_password(value)
@@ -126,12 +134,13 @@ class UserSerializer(serializers.ModelSerializer):
                 setattr(instance, attr, value)
         instance.save()
 
-        # Update Profile fields
+        # Update or Create Profile
         if profile_data:
-            # Safe get_or_create to ensure profile exists
             profile, _ = UserProfile.objects.get_or_create(user=instance)
-            for attr, value in profile_data.items():
-                setattr(profile, attr, value)
+            if 'avatar_url' in profile_data:
+                profile.avatar_url = profile_data['avatar_url']
+            if 'is_suspended' in profile_data:
+                profile.is_suspended = profile_data['is_suspended']
             profile.save()
             
         return instance
