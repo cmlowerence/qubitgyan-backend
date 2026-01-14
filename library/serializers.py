@@ -15,7 +15,7 @@ class ResourceSerializer(serializers.ModelSerializer):
         queryset=ProgramContext.objects.all(), write_only=True, many=True, source='contexts'
     )
     
-    # NEW: Add this to fetch the parent folder's name safely
+    # Fetch parent folder name safely
     node_name = serializers.ReadOnlyField(source='node.name')
 
     # Smart Inputs/Outputs
@@ -26,7 +26,7 @@ class ResourceSerializer(serializers.ModelSerializer):
         model = Resource
         fields = [
             'id', 'title', 'resource_type', 
-            'node', 'node_name', # Added node_name here
+            'node', 'node_name', 
             'contexts', 'context_ids', 
             'google_drive_id', 'google_drive_link',
             'external_url', 'content_text', 
@@ -50,7 +50,7 @@ class ResourceSerializer(serializers.ModelSerializer):
 
 class ChildNodeSerializer(serializers.ModelSerializer):
     resource_count = serializers.IntegerField(read_only=True)
-    items_count = serializers.IntegerField(read_only=True) # <--- New Field
+    items_count = serializers.IntegerField(read_only=True) 
 
     class Meta:
         model = KnowledgeNode
@@ -58,7 +58,7 @@ class ChildNodeSerializer(serializers.ModelSerializer):
             'id', 'name', 'node_type', 'parent', 
             'order', 'thumbnail_url', 'is_active', 
             'resource_count',
-            'items_count' # <--- Add to fields
+            'items_count'
         ]
 
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
@@ -82,16 +82,16 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         if obj.children.exists():
             children_qs = obj.children.all().annotate(
                 resource_count=Count('resources', distinct=True),
-                items_count=Count('children', distinct=True) # <--- Calculate children count
+                items_count=Count('children', distinct=True)
             )
             return ChildNodeSerializer(children_qs, many=True).data
         return []
 
-
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'password']
+        # ADDED: 'is_superuser' field so Frontend knows who the Boss is
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'password']
         extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):

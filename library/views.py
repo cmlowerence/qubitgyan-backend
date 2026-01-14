@@ -23,30 +23,26 @@ class ResourceViewSet(viewsets.ModelViewSet):
     serializer_class = ResourceSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter]
-    # Added node__name to allow searching by folder name
     search_fields = ['title', 'contexts__name', 'node__name']
 
     def get_queryset(self):
         queryset = Resource.objects.all()
         
-        # 1. Filter by specific folder (Existing)
+        # Filter by specific folder
         node_id = self.request.query_params.get('node', None)
         if node_id:
             queryset = queryset.filter(node_id=node_id).order_by('order')
             return queryset
 
-        # 2. Global Filters (New for Stage 5)
-        # Filter by Resource Type (PDF, VIDEO, LINK)
+        # Global Filters
         r_type = self.request.query_params.get('type', None)
         if r_type and r_type != 'ALL':
             queryset = queryset.filter(resource_type=r_type)
 
-        # Filter by Context (JEE, NEET)
         context_id = self.request.query_params.get('context', None)
         if context_id and context_id != 'ALL':
             queryset = queryset.filter(contexts__id=context_id)
 
-        # Default ordering for global list: Newest first
         return queryset.order_by('-created_at')
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser])
@@ -85,6 +81,16 @@ class UserViewSet(viewsets.ModelViewSet):
     def me(self, request):
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Prevent deletion of Superuser
+        if instance.is_superuser:
+            return Response(
+                {"error": "Action Forbidden: Cannot delete the Superuser account."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().destroy(request, *args, **kwargs)
 
 class StudentProgressViewSet(viewsets.ModelViewSet):
     serializer_class = StudentProgressSerializer
@@ -165,28 +171,32 @@ class DashboardStatsView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        # 1. Basic Counters
+        # 1. Basic Counters (Split Admins/Students)
         total_nodes = KnowledgeNode.objects.count()
         total_resources = Resource.objects.count()
-        total_users = User.objects.count()
+        
+        # Separate counts
+        total_admins = User.objects.filter(is_staff=True).count()
+        total_students = User.objects.filter(is_staff=False).count()
 
-        # 2. Resource Distribution (Pie Chart Data)
+        # 2. Resource Distribution
         type_distribution = Resource.objects.values('resource_type').annotate(count=Count('id'))
 
-        # 3. Subject Leaders (Bar Chart Data)
+        # 3. Subject Leaders
         top_subjects = KnowledgeNode.objects.filter(node_type='TOPIC') \
             .annotate(resource_count=Count('resources')) \
             .order_by('-resource_count')[:5] \
             .values('name', 'resource_count')
 
-        # 4. Recent Activity (The "What's New" list)
+        # 4. Recent Activity
         recent_resources = Resource.objects.all().order_by('-created_at')[:5]
         recent_serialized = ResourceSerializer(recent_resources, many=True).data
 
         return Response({
             "counts": {
                 "nodes": total_nodes,
-                "users": total_users,
+                "admins": total_admins,    # New Field
+                "students": total_students, # New Field
                 "resources": total_resources,
             },
             "charts": {
