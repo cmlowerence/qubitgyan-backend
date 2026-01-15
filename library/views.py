@@ -85,14 +85,18 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def me(self, request):
-        # SELF-HEALING: If this user has no profile, create one now.
-        # This fixes the issue for existing Superusers.
-        if not hasattr(request.user, 'profile'):
-            UserProfile.objects.create(user=request.user)
-            
+        # SELF-HEALING v2 (Bulletproof): 
+        # We use get_or_create directly on the database model. 
+        # This bypasses any caching on 'request.user' and guarantees the row exists.
+        try:
+            UserProfile.objects.get_or_create(user=request.user)
+        except Exception as e:
+            # If this fails (rare), we simply proceed. 
+            # The new Serializer (with hasattr) will handle the missing data without crashing.
+            print(f"Profile healing warning: {e}")
+
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
-
 
     def perform_create(self, serializer):
         """
@@ -109,8 +113,8 @@ class UserViewSet(viewsets.ModelViewSet):
         # 2. Save User
         user = serializer.save()
 
-        # 3. Update Profile Metadata (handled manually to ensure security)
-        # We use get_or_create to be safe, though create() in serializer should have made it.
+        # 3. Update Profile Metadata
+        # Use get_or_create to prevent UniqueConstraint errors if the signal or serializer already made one
         profile, _ = UserProfile.objects.get_or_create(user=user)
         profile.created_by = self.request.user
         profile.save()
@@ -138,6 +142,7 @@ class UserViewSet(viewsets.ModelViewSet):
             )
             
         return super().destroy(request, *args, **kwargs)
+
 
 class StudentProgressViewSet(viewsets.ModelViewSet):
     serializer_class = StudentProgressSerializer

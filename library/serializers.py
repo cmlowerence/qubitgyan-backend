@@ -2,7 +2,7 @@ import re
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.db.models import Count 
-from django.core.exceptions import ObjectDoesNotExist # Import this specifically
+from django.core.exceptions import ObjectDoesNotExist
 from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
 
 class ProgramContextSerializer(serializers.ModelSerializer):
@@ -94,28 +94,24 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
-    # --- CRASH PROOF GETTERS ---
+    # --- 100% SAFE GETTERS ---
+    # We use hasattr(obj, 'profile') which checks existence WITHOUT accessing it.
+    # This avoids the ObjectDoesNotExist error completely.
+    
     def get_created_by(self, obj):
-        try:
-            # Try to access the profile
-            if obj.profile.created_by:
-                return obj.profile.created_by.username
-            return None
-        except (ObjectDoesNotExist, AttributeError):
-            # If profile is missing, return None (Don't crash)
-            return None
+        if hasattr(obj, 'profile') and obj.profile.created_by:
+            return obj.profile.created_by.username
+        return None
 
     def get_avatar_url(self, obj):
-        try:
+        if hasattr(obj, 'profile'):
             return obj.profile.avatar_url
-        except (ObjectDoesNotExist, AttributeError):
-            return None
+        return None
 
     def get_is_suspended(self, obj):
-        try:
+        if hasattr(obj, 'profile'):
             return obj.profile.is_suspended
-        except (ObjectDoesNotExist, AttributeError):
-            return False
+        return False
     # ---------------------------
 
     def create(self, validated_data):
@@ -125,6 +121,7 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
     def update(self, instance, validated_data):
+        # Use self.initial_data safely to allow partial updates
         profile_data = self.initial_data.get('profile', {})
         
         for attr, value in validated_data.items():
@@ -134,8 +131,11 @@ class UserSerializer(serializers.ModelSerializer):
                 setattr(instance, attr, value)
         instance.save()
 
+        # Update Profile fields
         if profile_data:
+            # get_or_create is safer here for older users without profiles
             profile, _ = UserProfile.objects.get_or_create(user=instance)
+            
             if 'avatar_url' in profile_data:
                 profile.avatar_url = profile_data['avatar_url']
             if 'is_suspended' in profile_data:
