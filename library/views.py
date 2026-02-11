@@ -61,7 +61,7 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
     search_fields = ['name']
 
     def get_queryset(self):
-        base_qs = KnowledgeNode.objects.annotate(resource_count=Count('resources'))
+        base_qs = KnowledgeNode.objects.annotate(resource_count=Count('resources')).order_by('order', 'name')
         if self.action == 'list':
             if self.request.query_params.get('all', 'false').lower() == 'true':
                 return base_qs
@@ -105,10 +105,13 @@ class UserViewSet(viewsets.ModelViewSet):
         - Prevent Standard Admins from creating new Admins.
         """
         is_creating_admin = serializer.validated_data.get('is_staff', False)
+        is_creating_superuser = serializer.validated_data.get('is_superuser', False)
         
         # 1. Security Check
-        if is_creating_admin and not self.request.user.is_superuser:
-            raise exceptions.PermissionDenied("Action Forbidden: Only Superusers can create Administrator accounts.")
+        if (is_creating_admin or is_creating_superuser) and not self.request.user.is_superuser:
+            raise exceptions.PermissionDenied(
+                "Action Forbidden: Only Superusers can create Administrator accounts."
+            )
 
         # 2. Save User
         user = serializer.save()
@@ -118,6 +121,24 @@ class UserViewSet(viewsets.ModelViewSet):
         profile, _ = UserProfile.objects.get_or_create(user=user)
         profile.created_by = self.request.user
         profile.save()
+
+    def perform_update(self, serializer):
+        """
+        UPDATE SECURITY:
+        - Standard Admins cannot change privilege flags.
+        """
+        requesting_user = self.request.user
+        requested_is_staff = serializer.validated_data.get('is_staff')
+        requested_is_superuser = serializer.validated_data.get('is_superuser')
+
+        if not requesting_user.is_superuser and (
+            requested_is_staff is not None or requested_is_superuser is not None
+        ):
+            raise exceptions.PermissionDenied(
+                "Action Forbidden: Only Superusers can change user privilege levels."
+            )
+
+        serializer.save()
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -203,7 +224,7 @@ class GlobalSearchView(APIView):
                 "id": r.id,
                 "title": r.title,
                 "subtitle": f"File: {r.resource_type}",
-                "url": f"/admin/tree/{r.node}"
+                "url": f"/admin/tree/{r.node_id}"
             })
 
         # 3. Search Users (Respect Visibility Rules)
