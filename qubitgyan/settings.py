@@ -17,7 +17,32 @@ if RENDER_EXTERNAL_HOSTNAME:
 else:
     DEBUG = True # On Pydroid, Debug is ON
 
-ALLOWED_HOSTS = ['*'] # We will tighten this later
+ALLOWED_HOSTS = []
+if not DEBUG:
+    # Ensure Django knows it's behind Render's HTTPS proxy
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
+
+
+if RENDER_EXTERNAL_HOSTNAME:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+    # If you attach a custom domain later, add it here:
+    # ALLOWED_HOSTS.append('api.qubitgyan.com')
+else:
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
+
+
+if RENDER_EXTERNAL_HOSTNAME:
+    # In production, crash immediately if SECRET_KEY is missing
+    SECRET_KEY = os.environ['SECRET_KEY'] 
+else:
+    # In dev, use the fallback
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'localhost-pwd')
 
 # Application definition
 
@@ -112,7 +137,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # --- QubitGyan Custom Config ---
 
 # CORS Settings (Allow Next.js to talk to us)
-CORS_ALLOW_ALL_ORIGINS = True # For Dev. In prod, we will list the Vercel URL.
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    "https://qubitgyan.vercel.app",
+    "https://qubitgyan-admin.vercel.app",
+    "http://localhost:3000", # Keep local for testing
+]
 
 # REST Framework Config
 REST_FRAMEWORK = {
@@ -125,6 +155,15 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle'
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/day',
+        'user': '2000/day', 
+        'admissions': '50/day'
+    },
 }
 
 

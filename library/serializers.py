@@ -3,6 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.db.models import Count
 from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
+from .models import AdmissionRequest, Quiz, Question, Option, QuizAttempt, QuestionResponse
 
 
 class ProgramContextSerializer(serializers.ModelSerializer):
@@ -153,3 +154,77 @@ class StudentProgressSerializer(serializers.ModelSerializer):
         model = StudentProgress
         fields = ['id', 'resource', 'is_completed', 'last_accessed']
         read_only_fields = ['user']
+
+# --- ADMISSION SERIALIZERS ---
+class AdmissionRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdmissionRequest
+        fields = ['id', 'student_name', 'email', 'phone', 'class_grade', 'learning_goal', 'status', 'created_at']
+        read_only_fields = ['status', 'created_at']
+
+class AdminAdmissionApprovalSerializer(serializers.ModelSerializer):
+    """Used by Admins to approve/reject"""
+    class Meta:
+        model = AdmissionRequest
+        fields = ['status', 'review_remarks']
+
+# --- QUIZ SERIALIZERS ---
+class OptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Option
+        fields = ['id', 'text', 'is_correct']
+        # Note: is_correct should be stripped out dynamically for Student views to prevent cheating
+
+class QuestionSerializer(serializers.ModelSerializer):
+    options = OptionSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Question
+        fields = ['id', 'text', 'image_url', 'marks_positive', 'marks_negative', 'order', 'options']
+
+class QuizSerializer(serializers.ModelSerializer):
+    questions = QuestionSerializer(many=True, read_only=True)
+    resource_title = serializers.ReadOnlyField(source='resource.title')
+
+    class Meta:
+        model = Quiz
+        fields = ['id', 'resource', 'resource_title', 'passing_score_percentage', 'time_limit_minutes', 'questions']
+
+class StudentOptionSerializer(serializers.ModelSerializer):
+    """Strips out the 'is_correct' field so students can't cheat"""
+    class Meta:
+        model = Option
+        fields = ['id', 'text'] 
+
+class StudentQuestionSerializer(serializers.ModelSerializer):
+    options = StudentOptionSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Question
+        fields = ['id', 'text', 'image_url', 'marks_positive', 'marks_negative', 'order', 'options']
+
+class StudentQuizReadSerializer(serializers.ModelSerializer):
+    questions = StudentQuestionSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Quiz
+        fields = ['id', 'passing_score_percentage', 'time_limit_minutes', 'questions']
+
+class QuestionResponseSerializer(serializers.ModelSerializer):
+    """Shows the student what they picked and if it was correct"""
+    question_text = serializers.ReadOnlyField(source='question.text')
+    selected_option_text = serializers.ReadOnlyField(source='selected_option.text')
+    is_correct = serializers.ReadOnlyField(source='selected_option.is_correct')
+
+    class Meta:
+        model = QuestionResponse
+        fields = ['id', 'question', 'question_text', 'selected_option', 'selected_option_text', 'is_correct']
+
+class QuizAttemptSerializer(serializers.ModelSerializer):
+    """Shows the overall score and includes all the individual responses"""
+    responses = QuestionResponseSerializer(many=True, read_only=True)
+    quiz_title = serializers.ReadOnlyField(source='quiz.resource.title')
+
+    class Meta:
+        model = QuizAttempt
+        fields = ['id', 'quiz', 'quiz_title', 'start_time', 'end_time', 'total_score', 'is_completed', 'responses']

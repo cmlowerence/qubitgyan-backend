@@ -73,11 +73,6 @@ class UserViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAdminUser]
 
     def get_queryset(self):
-        """
-        SECURITY FILTER:
-        - Superusers see ALL users.
-        - Standard Admins see ONLY Students (is_staff=False).
-        """
         user = self.request.user
         if user.is_superuser:
             return User.objects.all().order_by('-date_joined')
@@ -85,48 +80,29 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def me(self, request):
-        # SELF-HEALING v2 (Bulletproof): 
-        # We use get_or_create directly on the database model. 
-        # This bypasses any caching on 'request.user' and guarantees the row exists.
         try:
             UserProfile.objects.get_or_create(user=request.user)
         except Exception as e:
-            # If this fails (rare), we simply proceed. 
-            # The new Serializer (with hasattr) will handle the missing data without crashing.
             print(f"Profile healing warning: {e}")
 
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
 
     def perform_create(self, serializer):
-        """
-        CREATION LOGIC:
-        - Track 'created_by'.
-        - Prevent Standard Admins from creating new Admins.
-        """
         is_creating_admin = serializer.validated_data.get('is_staff', False)
         is_creating_superuser = serializer.validated_data.get('is_superuser', False)
         
-        # 1. Security Check
         if (is_creating_admin or is_creating_superuser) and not self.request.user.is_superuser:
             raise exceptions.PermissionDenied(
                 "Action Forbidden: Only Superusers can create Administrator accounts."
             )
 
-        # 2. Save User
         user = serializer.save()
-
-        # 3. Update Profile Metadata
-        # Use get_or_create to prevent UniqueConstraint errors if the signal or serializer already made one
         profile, _ = UserProfile.objects.get_or_create(user=user)
         profile.created_by = self.request.user
         profile.save()
 
     def perform_update(self, serializer):
-        """
-        UPDATE SECURITY:
-        - Standard Admins cannot change privilege flags.
-        """
         requesting_user = self.request.user
         requested_is_staff = serializer.validated_data.get('is_staff')
         requested_is_superuser = serializer.validated_data.get('is_superuser')
@@ -137,25 +113,17 @@ class UserViewSet(viewsets.ModelViewSet):
             raise exceptions.PermissionDenied(
                 "Action Forbidden: Only Superusers can change user privilege levels."
             )
-
         serializer.save()
 
     def destroy(self, request, *args, **kwargs):
-        """
-        DELETION LOGIC:
-        - Prevent deletion of Superusers.
-        - Prevent Standard Admins from deleting other Admins.
-        """
         instance = self.get_object()
         
-        # 1. Protect Superusers
         if instance.is_superuser:
             return Response(
                 {"error": "Action Forbidden: Cannot delete the Superuser account."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # 2. Protect Admins from Non-Superusers
         if instance.is_staff and not request.user.is_superuser:
              return Response(
                 {"error": "Action Forbidden: Only Superusers can delete Administrator accounts."},
@@ -163,7 +131,6 @@ class UserViewSet(viewsets.ModelViewSet):
             )
             
         return super().destroy(request, *args, **kwargs)
-
 
 class StudentProgressViewSet(viewsets.ModelViewSet):
     serializer_class = StudentProgressSerializer
@@ -204,41 +171,28 @@ class GlobalSearchView(APIView):
             return Response({"results": []})
 
         results = []
-
-        # 1. Search Knowledge Nodes
         nodes = KnowledgeNode.objects.filter(name__icontains=query)[:5]
         for n in nodes:
             results.append({
-                "type": "NODE",
-                "id": n.id,
-                "title": n.name,
-                "subtitle": f"Type: {n.node_type}",
-                "url": f"/admin/tree/{n.id}"
+                "type": "NODE", "id": n.id, "title": n.name,
+                "subtitle": f"Type: {n.node_type}", "url": f"/admin/tree/{n.id}"
             })
 
-        # 2. Search Resources
         resources = Resource.objects.filter(title__icontains=query)[:5]
         for r in resources:
             results.append({
-                "type": "RESOURCE",
-                "id": r.id,
-                "title": r.title,
-                "subtitle": f"File: {r.resource_type}",
-                "url": f"/admin/tree/{r.node_id}"
+                "type": "RESOURCE", "id": r.id, "title": r.title,
+                "subtitle": f"File: {r.resource_type}", "url": f"/admin/tree/{r.node_id}"
             })
 
-        # 3. Search Users (Respect Visibility Rules)
         users_qs = User.objects.filter(username__icontains=query)
         if not request.user.is_superuser:
-            users_qs = users_qs.filter(is_staff=False) # Standard Admins only search Students
+            users_qs = users_qs.filter(is_staff=False)
             
         for u in users_qs[:5]:
             results.append({
-                "type": "USER",
-                "id": u.id,
-                "title": u.username,
-                "subtitle": u.email,
-                "url": "/admin/users"
+                "type": "USER", "id": u.id, "title": u.username,
+                "subtitle": u.email, "url": "/admin/users"
             })
 
         return Response(results)
@@ -249,7 +203,6 @@ class DashboardStatsView(APIView):
     def get(self, request):
         total_nodes = KnowledgeNode.objects.count()
         total_resources = Resource.objects.count()
-        
         total_admins = User.objects.filter(is_staff=True).count()
         total_students = User.objects.filter(is_staff=False).count()
 
@@ -265,14 +218,11 @@ class DashboardStatsView(APIView):
 
         return Response({
             "counts": {
-                "nodes": total_nodes,
-                "admins": total_admins,
-                "students": total_students,
-                "resources": total_resources,
+                "nodes": total_nodes, "admins": total_admins,
+                "students": total_students, "resources": total_resources,
             },
             "charts": {
-                "distribution": type_distribution,
-                "top_subjects": top_subjects
+                "distribution": type_distribution, "top_subjects": top_subjects
             },
             "recent_activity": recent_serialized
         })

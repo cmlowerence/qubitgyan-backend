@@ -1,5 +1,16 @@
 from django.contrib import admin
 from .models import KnowledgeNode, Resource, ProgramContext
+from .models import AdmissionRequest, Quiz, Question, Option, AdminAuditLog
+
+@admin.register(AdmissionRequest)
+class AdmissionRequestAdmin(admin.ModelAdmin):
+    list_display = ('student_name', 'email', 'status', 'created_at')
+    list_filter = ('status',)
+
+admin.site.register(Quiz)
+admin.site.register(Question)
+admin.site.register(Option)
+admin.site.register(AdminAuditLog)
 
 @admin.register(ProgramContext)
 class ProgramContextAdmin(admin.ModelAdmin):
