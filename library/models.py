@@ -3,20 +3,22 @@ from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 
 class UserProfile(models.Model):
-    """
-    Extension of the User model to store extra metadata.
-    """
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    
-    # Who made this account? (For Admins to track)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_users')
-    
-    # Custom Avatar (URL for now to keep it simple without media storage setup)
-    avatar_url = models.URLField(blank=True, null=True, help_text="Link to profile picture")
-    
-    # Account Status
-    is_suspended = models.BooleanField(default=False, help_text="If true, user cannot log in")
+    avatar_url = models.URLField(blank=True, null=True)
+    is_suspended = models.BooleanField(default=False)
 
+    # 🎮 GAMIFICATION (Student Stats)
+    current_streak = models.PositiveIntegerField(default=0)
+    longest_streak = models.PositiveIntegerField(default=0)
+    last_active_date = models.DateField(null=True, blank=True)
+    total_learning_minutes = models.PositiveIntegerField(default=0)
+
+    # 🛡️ GRANULAR ADMIN PERMISSIONS (Superadmin Control)
+    can_approve_admissions = models.BooleanField(default=False)
+    can_manage_content = models.BooleanField(default=False)
+    can_manage_users = models.BooleanField(default=False)
+    
     def __str__(self):
         return f"Profile for {self.user.username}"
 
@@ -88,18 +90,13 @@ class StudentProgress(models.Model):
     
     is_completed = models.BooleanField(default=False)
     last_accessed = models.DateTimeField(auto_now=True)
+    resume_timestamp = models.IntegerField(default=0, help_text="Saved playback time in seconds")
 
     class Meta:
         unique_together = ('user', 'resource')
 
     def __str__(self):
         return f"{self.user.username} - {self.resource.title}"
-
-
-
-# ==========================================
-# 1. ADMISSION PORTAL & SECURITY
-# ==========================================
 
 class AdmissionRequest(models.Model):
     STATUS_CHOICES = (
@@ -135,11 +132,6 @@ class AdminAuditLog(models.Model):
 
     class Meta:
         ordering = ['-timestamp']
-
-
-# ==========================================
-# 2. QUIZ ENGINE
-# ==========================================
 
 class Quiz(models.Model):
     """Links directly to an existing Resource of type 'QUIZ'"""
@@ -194,3 +186,100 @@ class QuestionResponse(models.Model):
     
     class Meta:
         unique_together = ('attempt', 'question')
+
+class QueuedEmail(models.Model):
+    """Stores emails safely in the database to prevent Gmail SMTP limits"""
+    recipient_email = models.EmailField()
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    html_body = models.TextField(blank=True, null=True)
+    is_sent = models.BooleanField(default=False)
+    error_message = models.TextField(blank=True, null=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"To: {self.recipient_email} - Sent: {self.is_sent}"
+
+class Course(models.Model):
+    """The wrapper that holds the learning tree (e.g., TGT Physics Crash Course)"""
+    title = models.CharField(max_length=255)
+    description = models.TextField()
+    thumbnail_url = models.URLField(blank=True, null=True)
+    is_published = models.BooleanField(default=False)
+    
+    # Links to the TOP level of your existing KnowledgeNode tree (Domain/Subject)
+    root_node = models.OneToOneField('KnowledgeNode', on_delete=models.CASCADE, related_name='course_wrapper')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.title
+
+class Enrollment(models.Model):
+    """Tracks which courses a student has added to their dashboard"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='enrollments')
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='enrolled_students')
+    enrolled_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'course') # Prevents double enrollment
+
+class Notification(models.Model):
+    """Global or targeted messages from Admins"""
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    sender = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='sent_notifications')
+    
+    # If null, it's a global broadcast. If set, it's for a specific student.
+    target_user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='targeted_notifications')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Notification: {self.title}"
+
+class UserNotificationStatus(models.Model):
+    """Tracks the 'Read' status efficiently without duplicating messages"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notification_statuses')
+    notification = models.ForeignKey(Notification, on_delete=models.CASCADE)
+    is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('user', 'notification')
+
+class Bookmark(models.Model):
+    """Allows students to save specific resources for later"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bookmarks')
+    resource = models.ForeignKey('Resource', on_delete=models.CASCADE, related_name='bookmarked_by')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'resource') # Prevent duplicate bookmarks
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user.username} saved {self.resource.title}"
+    
+class UploadedImage(models.Model):
+    """Tracks images uploaded to Supabase to calculate the 1GB limit"""
+    name = models.CharField(max_length=255)
+    category = models.CharField(max_length=100, help_text="e.g., 'thumbnails', 'questions', 'avatars'")
+    supabase_path = models.CharField(max_length=500, unique=True)
+    public_url = models.URLField(max_length=500)
+    file_size_bytes = models.BigIntegerField(default=0)
+    uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-uploaded_at']
+
+    def __str__(self):
+        return f"[{self.category}] {self.name}"
+

@@ -2,15 +2,20 @@ import re
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.db.models import Count
-from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
-from .models import AdmissionRequest, Quiz, Question, Option, QuizAttempt, QuestionResponse
-
+from .models import (
+    KnowledgeNode, Resource, ProgramContext, 
+    StudentProgress, UserProfile, Bookmark, 
+    AdmissionRequest, Quiz, Question, Option, 
+    QuizAttempt, QuestionResponse, Course, 
+    Enrollment, Notification, UserNotificationStatus, 
+    UploadedImage)
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 
 class ProgramContextSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProgramContext
         fields = ['id', 'name', 'description']
-
 
 class ResourceSerializer(serializers.ModelSerializer):
     contexts = ProgramContextSerializer(many=True, read_only=True)
@@ -47,7 +52,6 @@ class ResourceSerializer(serializers.ModelSerializer):
             return obj.external_url
         return None
 
-
 class ChildNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     resource_count = serializers.IntegerField(read_only=True)
@@ -70,7 +74,6 @@ class ChildNodeSerializer(serializers.ModelSerializer):
         )
         return ChildNodeSerializer(children_qs, many=True).data
 
-
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     resource_count = serializers.IntegerField(read_only=True, required=False)
@@ -90,7 +93,6 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
             items_count=Count('children', distinct=True),
         )
         return ChildNodeSerializer(children_qs, many=True).data
-
 
 class UserSerializer(serializers.ModelSerializer):
     created_by = serializers.SerializerMethodField()
@@ -148,14 +150,12 @@ class UserSerializer(serializers.ModelSerializer):
 
         return instance
 
-
 class StudentProgressSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentProgress
         fields = ['id', 'resource', 'is_completed', 'last_accessed']
         read_only_fields = ['user']
 
-# --- ADMISSION SERIALIZERS ---
 class AdmissionRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdmissionRequest
@@ -168,7 +168,6 @@ class AdminAdmissionApprovalSerializer(serializers.ModelSerializer):
         model = AdmissionRequest
         fields = ['status', 'review_remarks']
 
-# --- QUIZ SERIALIZERS ---
 class OptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Option
@@ -228,3 +227,84 @@ class QuizAttemptSerializer(serializers.ModelSerializer):
     class Meta:
         model = QuizAttempt
         fields = ['id', 'quiz', 'quiz_title', 'start_time', 'end_time', 'total_score', 'is_completed', 'responses']
+
+class CourseSerializer(serializers.ModelSerializer):
+    """Used for browsind available courses"""
+    root_node_name = serializers.ReadOnlyField(source='root_node.name')
+    is_enrolled = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Course
+        fields = ['id', 'title', 'description', 'thumbnail_url', 'is_published', 'root_node_name', 'created_at', 'is_enrolled']
+
+    def get_is_enrolled(self, obj):
+        user = self.context.get('request').user if self.context and 'request' in self.context else None
+        if user and user.is_authenticated:
+            return Enrollment.objects.filter(user=user, course=obj).exists()
+        return False
+
+class EnrollmentSerializer(serializers.ModelSerializer):
+    course_details = CourseSerializer(source='course', read_only=True)
+
+    class Meta:
+        model = Enrollment
+        fields = ['id', 'course', 'course_details', 'enrolled_at']
+        read_only_fields = ['user']
+
+class NotificationSerializer(serializers.ModelSerializer):
+    is_read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = ['id', 'title', 'message', 'created_at', 'is_read']
+
+    def get_is_read(self, obj):
+        user = self.context.get('request').user if self.context and 'request' in self.context else None
+        if user and user.is_authenticated:
+            # Check if there is a 'read' status record for this user and this notification
+            status_record = UserNotificationStatus.objects.filter(user=user, notification=obj).first()
+            return status_record.is_read if status_record else False
+        return False
+    
+class ChangePasswordSerializer(serializers.Serializer):
+    """Securely handles password changes for authenticated users"""
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True)
+
+    def validate_new_password(self, value):
+        # This checks against the validators in your settings.py 
+        # (e.g., MinimumLengthValidator, CommonPasswordValidator)
+        try:
+            validate_password(value)
+        except ValidationError as e:
+            raise serializers.ValidationError(list(e.messages))
+        return value
+
+class MyProfileSerializer(serializers.ModelSerializer):
+    """Sends the student's gamification stats and basic info to their dashboard"""
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.EmailField(source='user.email', read_only=True)
+    first_name = serializers.CharField(source='user.first_name', read_only=True)
+
+    class Meta:
+        model = UserProfile
+        fields = [
+            'username', 'email', 'first_name', 'avatar_url', 
+            'current_streak', 'longest_streak', 'total_learning_minutes', 'last_active_date'
+        ]
+
+class BookmarkSerializer(serializers.ModelSerializer):
+    """Provides the bookmark ID and details about the saved resource"""
+    resource_title = serializers.ReadOnlyField(source='resource.title')
+    resource_type = serializers.ReadOnlyField(source='resource.resource_type')
+
+    class Meta:
+        model = Bookmark
+        fields = ['id', 'resource', 'resource_title', 'resource_type', 'created_at']
+        read_only_fields = ['user']
+
+class UploadedImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UploadedImage
+        fields = '__all__'
+

@@ -1,6 +1,6 @@
-# Backend → Frontend Integration Map
+# Backend → Frontend Integration Map (v2.0 - LMS Upgrade)
 
-This file maps the current Django + DRF backend behavior so frontend can reliably integrate against the existing API.
+This file maps the current Django + DRF backend behavior so the Next.js frontend can reliably integrate against the existing API.
 
 Base API prefix: `/api/v1/`
 Auth endpoints: `/api/token/`, `/api/token/refresh/`
@@ -9,377 +9,108 @@ Auth endpoints: `/api/token/`, `/api/token/refresh/`
 
 ## 1) Authentication & Access Model
 
-## Auth flow (JWT)
+### Auth flow (JWT)
 - **Login**: `POST /api/token/`
-  - Input: `username`, `password`
+  - Input: `username` (Note: This is the user's **email address**), `password`
   - Output: `access`, `refresh`
 - **Refresh token**: `POST /api/token/refresh/`
   - Input: `refresh`
   - Output: `access`
+- **Change Password**: `PUT /api/v1/public/change-password/`
+  - Input: `old_password`, `new_password` (Requires Bearer Token)
 
-### Permission defaults
-- Global default requires authentication (`IsAuthenticated`).
-- Most content endpoints use custom `IsAdminOrReadOnly`:
-  - `GET/HEAD/OPTIONS` are public/readable.
-  - write actions require `is_staff=True`.
-- Some endpoints are admin-only (`IsAdminUser`) and must be called by staff users.
+### Permission defaults & RBAC (Role-Based Access Control)
+- **Students**: Require standard `IsAuthenticated` token.
+- **Standard Admins**: Require `is_staff=True`. Can only edit content if their `UserProfile` has `can_manage_content=True`. Can only approve students if `can_approve_admissions=True`.
+- **Superadmins**: Require `is_superuser=True`. Full access to all endpoints, including RBAC toggles and Supabase media deletion.
 
 ---
 
-## 2) Core Data Model (Frontend-relevant)
+## 2) Core Data Model (Frontend-relevant Additions)
 
-## KnowledgeNode (tree)
-Represents hierarchy for learning tree:
-- `id`
-- `name`
-- `node_type` ∈ `DOMAIN | SUBJECT | SECTION | TOPIC`
-- `parent` (nullable id)
-- `order`
-- `thumbnail_url`
-- `is_active`
+### Course & Enrollment
+- **Course**: A publishable wrapper around a top-level `KnowledgeNode`. Includes `id`, `title`, `description`, `thumbnail_url`, `is_published`, `root_node` (id), and `is_enrolled` (computed boolean).
+- **Enrollment**: Links a `User` to a `Course`.
 
-Computed in serializers:
-- `resource_count`: number of resources directly linked to this node
-- `items_count`: number of immediate child nodes
-- `children`: nested children array (recursive, same shape)
+### Gamification & Profile (UserProfile projection)
+- Profiles now contain LMS stats: `current_streak`, `longest_streak`, `total_learning_minutes`, `last_active_date`, and `avatar_url`.
 
-## Resource
-Learning content attached to a node:
-- `id`, `title`
-- `resource_type` ∈ `PDF | VIDEO | QUIZ | EXERCISE`
-- `node` (id), `node_name`
-- `contexts` (expanded objects)
-- `context_ids` (write-only list of context ids)
-- `google_drive_id`, `google_drive_link` (write-only helper)
-- `external_url`, `content_text`
-- `preview_link` (computed)
-- `created_at`, `order`
+### Admissions
+- **AdmissionRequest**: `id`, `student_name`, `email`, `phone_number`, `status` (`PENDING`, `APPROVED`, `REJECTED`), `review_remarks`.
 
-## ProgramContext
-Grouping/taxonomy for resources:
-- `id`, `name`, `description`
+### Quizzes
+- **Quiz**: Attached to a `Resource` of type `QUIZ`. Contains `passing_score_percentage`, `time_limit_minutes`.
+- **Questions & Options**: Deeply nested. *Note: Correct answers (`is_correct`) are stripped from the payload when fetched by students.*
 
-## StudentProgress
-Per-user completion tracking:
-- `id`, `resource`, `is_completed`, `last_accessed`
-- one unique row per `(user, resource)`
+### Notifications & Bookmarks
+- **Notification**: `id`, `title`, `message`, `target_user` (nullable for global blasts), `is_read` (computed).
+- **Bookmark**: Links a `User` to a `Resource` for "Watch Later" functionality.
 
-## User (+ profile projection)
-User response includes profile-projected fields:
-- Django user fields: `id`, `username`, `email`, `first_name`, `last_name`, `is_staff`, `is_superuser`
-- profile-derived: `created_by`, `avatar_url`, `is_suspended`
+### Progress & Tracking
+- **StudentProgress**: Now includes `resume_timestamp` (integer in seconds) to remember exactly where a student paused a video.
 
 ---
 
 ## 3) Endpoint Map and Frontend Usage
 
-## 3.1 Nodes (knowledge tree)
-Base: `/api/v1/nodes/`
+### 3.1 Core Contract (The Library)
+- **Nodes**: `GET /api/v1/nodes/` (Returns root nodes + nested children).
+- **Resources**: `GET /api/v1/resources/?node=<id>` (Returns resources for a specific node).
+- **Progress**: `GET /api/v1/progress/` (Student's completed resources).
+- **Contexts**: `GET /api/v1/contexts/` (Taxonomy/Tags).
 
-### GET `/api/v1/nodes/`
-Returns **top-level nodes only** (`parent = null`) with recursive `children` nested down the full tree.
+### 3.2 Public Endpoints (Student-Facing)
+Prefix: `/api/v1/public/`
 
-Query params:
-- `search=<text>`: text search on name
-- `all=true`: returns all nodes (not only root)
+- **Admissions**
+  - `POST admissions/`: Submit a new application form (Rate limited).
+- **Profile & Gamification**
+  - `GET my-profile/`: Fetch the logged-in student's stats and streak.
+  - `POST gamification/ping/`: Call every 5 minutes while active. Body: `{"minutes": 5}`.
+- **Courses**
+  - `GET courses/`: Browse all published courses.
+  - `POST courses/:id/enroll/`: Add course to student's library.
+  - `GET courses/my_courses/`: Fetch only enrolled courses.
+- **Quizzes**
+  - `GET quizzes/`: Fetch quiz data (WITHOUT correct answers).
+  - `POST quiz-attempts/`: Submit selected option IDs. Backend calculates score and returns pass/fail.
+  - `GET quiz-attempts/`: View past scores.
+- **Bookmarks & Tracking**
+  - `CRUD bookmarks/`: Save/remove resources for later.
+  - `POST tracking/save_timestamp/`: Save video playback position. Body: `{"resource_id": 1, "resume_timestamp": 120}`.
+- **Notifications**
+  - `GET notifications/`: Fetch inbox.
+  - `POST notifications/:id/mark_read/`: Mark as seen.
 
-### GET `/api/v1/nodes/:id/`
-Returns one node with nested `children`.
+### 3.3 Manager Endpoints (Admin-Facing)
+Prefix: `/api/v1/manager/`
 
-### POST/PATCH/DELETE `/api/v1/nodes/...`
-Write access is admin/staff only.
-
----
-
-## 3.2 Resources
-Base: `/api/v1/resources/`
-
-### GET `/api/v1/resources/`
-Supports filters:
-- `node=<nodeId>` → resources for node, ordered by `order`
-- `type=<PDF|VIDEO|QUIZ|EXERCISE|ALL>`
-- `context=<contextId|ALL>`
-- `search=<text>` across title/context/node
-
-Default ordering (when not filtering by `node`): newest first.
-
-### POST `/api/v1/resources/`
-Use `context_ids` for writing contexts and optional `google_drive_link` helper.
-
-### POST `/api/v1/resources/reorder/`
-Admin only. Body:
-```json
-{ "ids": [11, 7, 9] }
-```
-Sets `order` by array position.
-
----
-
-## 3.3 Contexts
-Base: `/api/v1/contexts/`
-- Standard CRUD
-- Reads are public
-- Writes are admin/staff only
-
----
-
-## 3.4 Users
-Base: `/api/v1/users/` (admin-only endpoint)
-
-### GET `/api/v1/users/`
-- Superuser sees all users.
-- Staff admin (non-superuser) sees only students (`is_staff=false`).
-
-### POST `/api/v1/users/`
-- Superuser can create admin/superuser accounts.
-- Non-superuser admin is blocked from setting privileged flags.
-
-### PATCH `/api/v1/users/:id/`
-- Superuser can change `is_staff` / `is_superuser`.
-- Non-superuser admin cannot alter privilege flags.
-
-### GET `/api/v1/users/me/`
-Authenticated user endpoint returning own user payload + profile projection.
+- **Admissions**
+  - `GET admissions/`: List all applications.
+  - `PATCH admissions/:id/process_application/`: Approve/Reject. If APPROVED, auto-creates user and queues the email. Body: `{"status": "APPROVED"}`.
+- **Courses & Quizzes**
+  - `CRUD courses/`: Build course wrappers.
+  - `CRUD quizzes/`: Create quizzes using deeply nested JSON (Resource -> Quiz -> Questions -> Options).
+- **Email Queue**
+  - `GET emails/queue_status/`: See pending/sent counts.
+  - `POST emails/dispatch_batch/`: Safely send emails via Gmail SMTP to avoid spam blocks. Body: `{"limit": 20}`.
+- **Media Storage (Supabase)**
+  - `POST media/upload/`: Upload images. Uses `multipart/form-data`.
+  - `GET media/storage_status/`: Check 1GB bucket limit.
+  - `DELETE media/:id/` *(Superadmin Only)*: Deletes from DB and frees Supabase storage.
+- **RBAC Security**
+  - `GET rbac/list_admins/` *(Superadmin Only)*: View staff permissions.
+  - `PATCH rbac/:id/update_permissions/` *(Superadmin Only)*: Toggle `can_manage_content`, etc.
 
 ---
 
-## 3.5 Student Progress
-Base: `/api/v1/progress/`
+## 4) Response Shapes (New Key Payloads)
 
-### GET `/api/v1/progress/`
-Authenticated user sees **only own** progress rows.
-
-### POST `/api/v1/progress/`
-`user` is auto-assigned from token; frontend only sends resource/completion fields.
-
-### GET `/api/v1/progress/all_admin_view/`
-Admin-only aggregate view of all students.
-
----
-
-## 3.6 Dashboard + Search
-
-### GET `/api/v1/dashboard/stats/` (admin only)
-Returns counters, charts, and recent resources.
-
-### GET `/api/v1/global-search/?q=<text>` (admin only)
-Returns mixed result items (`NODE`, `RESOURCE`, `USER`).
-
----
-
-## 4) Response Shapes (Samples)
-
-> Note: List responses are paginated by DRF globally. Typical shape is:
+### 4.1 Gamification Ping
+`POST /api/v1/public/gamification/ping/`
 ```json
 {
-  "count": 42,
-  "next": "http://localhost:8000/api/v1/nodes/?page=2",
-  "previous": null,
-  "results": []
+  "current_streak": 3,
+  "longest_streak": 12,
+  "total_learning_minutes": 450
 }
-```
-
-## 4.1 Login
-`POST /api/token/`
-
-Response:
-```json
-{
-  "refresh": "<jwt_refresh_token>",
-  "access": "<jwt_access_token>"
-}
-```
-
-## 4.2 Nodes list (root + deep children)
-`GET /api/v1/nodes/`
-
-Response:
-```json
-{
-  "count": 1,
-  "next": null,
-  "previous": null,
-  "results": [
-    {
-      "id": 1,
-      "name": "Mathematics",
-      "node_type": "DOMAIN",
-      "parent": null,
-      "order": 1,
-      "thumbnail_url": null,
-      "is_active": true,
-      "children": [
-        {
-          "id": 2,
-          "name": "Algebra",
-          "node_type": "SUBJECT",
-          "parent": 1,
-          "order": 1,
-          "thumbnail_url": null,
-          "is_active": true,
-          "children": [
-            {
-              "id": 3,
-              "name": "Linear Equations",
-              "node_type": "SECTION",
-              "parent": 2,
-              "order": 1,
-              "thumbnail_url": null,
-              "is_active": true,
-              "children": [
-                {
-                  "id": 4,
-                  "name": "Elimination Method",
-                  "node_type": "TOPIC",
-                  "parent": 3,
-                  "order": 1,
-                  "thumbnail_url": null,
-                  "is_active": true,
-                  "children": [],
-                  "resource_count": 2,
-                  "items_count": 0
-                }
-              ],
-              "resource_count": 0,
-              "items_count": 1
-            }
-          ],
-          "resource_count": 0,
-          "items_count": 1
-        }
-      ],
-      "resource_count": 0,
-      "items_count": 1
-    }
-  ]
-}
-```
-
-## 4.3 Resource item
-`GET /api/v1/resources/?node=4`
-
-Response example item:
-```json
-{
-  "id": 10,
-  "title": "Intro PDF",
-  "resource_type": "PDF",
-  "node": 4,
-  "node_name": "Elimination Method",
-  "contexts": [{ "id": 1, "name": "JEE", "description": "Engineering prep" }],
-  "google_drive_id": "1AbCdEfGhIjKlMnOpQrStUvWx",
-  "external_url": null,
-  "content_text": null,
-  "preview_link": "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWx/preview",
-  "created_at": "2026-02-12T10:14:58.221Z",
-  "order": 0
-}
-```
-
-## 4.4 Student progress list
-`GET /api/v1/progress/`
-
-```json
-{
-  "count": 2,
-  "next": null,
-  "previous": null,
-  "results": [
-    {
-      "id": 7,
-      "resource": 10,
-      "is_completed": true,
-      "last_accessed": "2026-02-12T11:40:21.101Z"
-    }
-  ]
-}
-```
-
-## 4.5 Dashboard stats
-`GET /api/v1/dashboard/stats/`
-
-```json
-{
-  "counts": {
-    "nodes": 124,
-    "admins": 3,
-    "students": 250,
-    "resources": 890
-  },
-  "charts": {
-    "distribution": [
-      { "resource_type": "PDF", "count": 420 },
-      { "resource_type": "VIDEO", "count": 300 }
-    ],
-    "top_subjects": [
-      { "name": "Coordinate Geometry", "resource_count": 80 }
-    ]
-  },
-  "recent_activity": [
-    {
-      "id": 101,
-      "title": "Circle Notes",
-      "resource_type": "PDF",
-      "node": 18,
-      "node_name": "Circles",
-      "contexts": [],
-      "google_drive_id": "1xxxyyyzzz",
-      "external_url": null,
-      "content_text": null,
-      "preview_link": "https://drive.google.com/file/d/1xxxyyyzzz/preview",
-      "created_at": "2026-02-12T08:00:00Z",
-      "order": 0
-    }
-  ]
-}
-```
-
-## 4.6 Global search
-`GET /api/v1/global-search/?q=alg`
-
-```json
-[
-  {
-    "type": "NODE",
-    "id": 2,
-    "title": "Algebra",
-    "subtitle": "Type: SUBJECT",
-    "url": "/admin/tree/2"
-  },
-  {
-    "type": "RESOURCE",
-    "id": 10,
-    "title": "Algebra Basics PDF",
-    "subtitle": "File: PDF",
-    "url": "/admin/tree/2"
-  },
-  {
-    "type": "USER",
-    "id": 41,
-    "title": "student_rahul",
-    "subtitle": "rahul@example.com",
-    "url": "/admin/users"
-  }
-]
-```
-
----
-
-## 5) Frontend Implementation Notes (Important)
-
-- **Always parse paginated list responses via `results`**.
-- **Tree traversal** should recurse through `node.children` until empty array.
-- Resource write requests should use `context_ids`, not `contexts`.
-- For PDF display, use `preview_link` when present.
-- Progress endpoints are user-scoped unless using admin aggregate endpoint.
-- User management screens should assume role-based field restrictions (some updates can return 403 for non-superusers).
-
----
-
-## 6) Suggested quick API checklist for frontend
-
-1. Login and store access/refresh.
-2. Fetch `/api/v1/nodes/`, render nested tree from `results[].children` recursively.
-3. On node click, fetch `/api/v1/resources/?node=<id>`.
-4. Track completion through `/api/v1/progress/`.
-5. For admin app: use dashboard, global search, reorder endpoint, and user endpoint with role-aware handling.

@@ -1,15 +1,16 @@
 # library\api\v1\public\views.py
-from rest_framework import viewsets, permissions, mixins, exceptions
+from rest_framework import viewsets, permissions, mixins, exceptions, status, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from django.utils import timezone
-
+from django.db.models import Q
+from datetime import timedelta
 from library.models import (
     AdmissionRequest, QuizAttempt, Question, 
-    Option, QuestionResponse, Quiz, StudentProgress
+    Option, QuestionResponse, Quiz, StudentProgress, Course, Enrollment, Notification,UserNotificationStatus, UserProfile, Bookmark, Resource
 )
-from library.serializers import AdmissionRequestSerializer, QuizAttemptSerializer, StudentQuizReadSerializer
+from library.serializers import AdmissionRequestSerializer, QuizAttemptSerializer, StudentQuizReadSerializer, CourseSerializer, NotificationSerializer, ChangePasswordSerializer, MyProfileSerializer, BookmarkSerializer
 
 class PublicAdmissionViewSet(viewsets.ModelViewSet):
     """Spam-protected public endpoint for students to request an account"""
@@ -110,4 +111,177 @@ class StudentQuizFetchViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet
     queryset = Quiz.objects.all()
     serializer_class = StudentQuizReadSerializer
     permission_classes = [permissions.IsAuthenticated]
-    # We only use Retrieve (GET /api/v1/public/quizzes/{id}/) so they can't list all quizzes at once
+
+class PublicCourseViewSet(viewsets.ReadOnlyModelViewSet):
+    """Students can browse all published courses and enroll"""
+    queryset = Course.objects.filter(is_published=True).order_by('-created_at')
+    serializer_class = CourseSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=True, methods=['post'])
+    def enroll(self, request, pk=None):
+        """Action for a student to enroll in a course"""
+        course = self.get_object()
+        enrollment, created = Enrollment.objects.get_or_create(user=request.user, course=course)
+        
+        if created:
+            return Response({"status": "Enrolled successfully"}, status=status.HTTP_201_CREATED)
+        return Response({"status": "Already enrolled"}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'])
+    def my_courses(self, request):
+        """Returns ONLY the courses the student is enrolled in"""
+        enrollments = Enrollment.objects.filter(user=request.user).select_related('course')
+        courses = [e.course for e in enrollments]
+        
+        # We pass the request context so the Serializer knows who is asking (for the is_enrolled field)
+        serializer = self.get_serializer(courses, many=True)
+        return Response(serializer.data)
+
+class GamificationViewSet(viewsets.ViewSet):
+    """Handles streaks and learning time tracking"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=False, methods=['post'])
+    def ping(self, request):
+        """
+        Frontend should call this every 5 minutes while the student is active.
+        Calculates streaks and total time spent.
+        """
+        user = request.user
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        today = timezone.now().date()
+
+        # Add learning time (default 5 minutes per ping)
+        minutes_to_add = int(request.data.get('minutes', 5))
+        profile.total_learning_minutes += minutes_to_add
+
+        # Calculate Daily Streak
+        if profile.last_active_date == today:
+            pass # Already active today, streak is maintained
+        elif profile.last_active_date == today - timedelta(days=1):
+            profile.current_streak += 1 # Active yesterday, increment streak!
+        else:
+            profile.current_streak = 1 # Missed a day, reset streak to 1
+
+        # Check for Longest Streak Record
+        if profile.current_streak > profile.longest_streak:
+            profile.longest_streak = profile.current_streak
+
+        profile.last_active_date = today
+        profile.save()
+
+        return Response({
+            "current_streak": profile.current_streak,
+            "longest_streak": profile.longest_streak,
+            "total_learning_minutes": profile.total_learning_minutes
+        })
+
+class StudentNotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    """Students can fetch their notifications and mark them as read"""
+    serializer_class = NotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Fetch GLOBAL notifications (target_user is null) OR targeted specifically to this user
+        return Notification.objects.filter(
+            Q(target_user__isnull=True) | Q(target_user=self.request.user)
+        ).order_by('-created_at')
+
+    @action(detail=True, methods=['post'])
+    def mark_read(self, request, pk=None):
+        """Creates a record saying this specific student read this message"""
+        notification = self.get_object()
+        
+        status_record, _ = UserNotificationStatus.objects.get_or_create(
+            user=request.user, 
+            notification=notification
+        )
+        
+        status_record.is_read = True
+        status_record.read_at = timezone.now()
+        status_record.save()
+        
+        return Response({"status": "Marked as read"}, status=status.HTTP_200_OK)
+    
+class ChangePasswordView(generics.UpdateAPIView):
+    """
+    Endpoint for students (or admins) to change their password.
+    Requires a valid JWT token.
+    """
+    serializer_class = ChangePasswordSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        # Securely grab the user from the JWT token, not the URL
+        return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        user = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+
+        if serializer.is_valid():
+            # 1. Verify the old password is correct
+            if not user.check_password(serializer.data.get("old_password")):
+                return Response(
+                    {"old_password": ["Incorrect current password."]}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # 2. Hash and save the new password
+            user.set_password(serializer.data.get("new_password"))
+            user.save()
+            
+            return Response(
+                {"status": "Password updated successfully."}, 
+                status=status.HTTP_200_OK
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+class MyProfileView(generics.RetrieveAPIView):
+    """Allows a student to fetch their own gamification stats and details"""
+    serializer_class = MyProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        # Securely fetch profile using the JWT token identity
+        profile, _ = UserProfile.objects.get_or_create(user=self.request.user)
+        return profile
+
+class BookmarkViewSet(viewsets.ModelViewSet):
+    """Students can list, create, and delete their saved resources"""
+    serializer_class = BookmarkSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # ONLY return the logged-in student's bookmarks
+        return Bookmark.objects.filter(user=self.request.user).select_related('resource')
+
+    def perform_create(self, serializer):
+        # Automatically attach the logged-in user to the bookmark
+        serializer.save(user=self.request.user)
+    
+class ResourceTrackingViewSet(viewsets.ViewSet):
+    """Dedicated endpoints for tracking exact media progress"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=False, methods=['post'])
+    def save_timestamp(self, request):
+        """Frontend calls this when a video pauses to save the exact second"""
+        resource_id = request.data.get('resource_id')
+        timestamp = request.data.get('resume_timestamp', 0)
+        
+        try:
+            resource = Resource.objects.get(pk=resource_id)
+            progress, _ = StudentProgress.objects.get_or_create(
+                user=request.user, 
+                resource=resource
+            )
+            
+            progress.resume_timestamp = int(timestamp)
+            progress.save()
+            
+            return Response({"status": "Progress saved", "timestamp": progress.resume_timestamp})
+        except Resource.DoesNotExist:
+            return Response({"error": "Resource not found"}, status=status.HTTP_404_NOT_FOUND)
