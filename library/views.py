@@ -3,8 +3,9 @@ from rest_framework import viewsets, filters, permissions, status, exceptions
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.contrib.auth.models import User
+from django.db import transaction
 
 from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
 from .serializers import (
@@ -45,13 +46,19 @@ class ResourceViewSet(viewsets.ModelViewSet):
         return queryset.order_by('-created_at')
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser])
+    @transaction.atomic
     def reorder(self, request):
         ids = request.data.get('ids', [])
         if not ids:
             return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        for index, resource_id in enumerate(ids):
-            Resource.objects.filter(id=resource_id).update(order=index)
+
+        id_positions = {resource_id: index for index, resource_id in enumerate(ids)}
+        resources = list(Resource.objects.filter(id__in=id_positions.keys()))
+        for resource in resources:
+            resource.order = id_positions[resource.id]
+
+        if resources:
+            Resource.objects.bulk_update(resources, ['order'])
             
         return Response({'status': 'order updated'}, status=status.HTTP_200_OK)
 
@@ -76,8 +83,8 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.is_superuser:
-            return User.objects.all().order_by('-date_joined')
-        return User.objects.filter(is_staff=False).order_by('-date_joined')
+            return User.objects.select_related('profile').all().order_by('-date_joined')
+        return User.objects.select_related('profile').filter(is_staff=False).order_by('-date_joined')
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def me(self, request):
@@ -202,10 +209,14 @@ class DashboardStatsView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
+        users_by_role = User.objects.aggregate(
+            total_admins=Count('id', filter=Q(is_staff=True)),
+            total_students=Count('id', filter=Q(is_staff=False)),
+        )
         total_nodes = KnowledgeNode.objects.count()
         total_resources = Resource.objects.count()
-        total_admins = User.objects.filter(is_staff=True).count()
-        total_students = User.objects.filter(is_staff=False).count()
+        total_admins = users_by_role['total_admins']
+        total_students = users_by_role['total_students']
 
         type_distribution = Resource.objects.values('resource_type').annotate(count=Count('id'))
 
