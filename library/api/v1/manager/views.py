@@ -1,4 +1,5 @@
 import os
+import time
 from supabase import create_client, Client
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db.models import Sum
@@ -149,13 +150,18 @@ class EmailManagementViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['post'])
     def dispatch_batch(self, request):
-        limit = int(request.data.get('limit', 10)) 
+        # Keep request time bounded to avoid platform worker timeouts.
+        limit = min(int(request.data.get('limit', 10)), 25)
+        max_seconds = min(int(request.data.get('max_seconds', 20)), 25)
+        started_at = time.monotonic()
         pending_emails = QueuedEmail.objects.filter(is_sent=False)[:limit]
         
         sent_count = 0
         failed_count = 0
 
         for queued_email in pending_emails:
+            if time.monotonic() - started_at >= max_seconds:
+                break
             try:
                 send_mail(
                     subject=queued_email.subject,
@@ -238,7 +244,8 @@ class ManagerCourseViewSet(viewsets.ModelViewSet):
     def check_permissions(self, request):
         super().check_permissions(request)
         # Extra security: Enforce RBAC flag
-        if not request.user.is_superuser and not getattr(request.user.profile, 'can_manage_content', False):
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        if not request.user.is_superuser and not profile.can_manage_content:
             self.permission_denied(request, message="You do not have permission to manage courses.")
 
 class ManagerNotificationViewSet(viewsets.ModelViewSet):
@@ -258,10 +265,12 @@ class SuperAdminRBACViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['get'])
     def list_admins(self, request):
         """Returns all staff users and their current permission flags"""
-        admins = User.objects.filter(is_staff=True, is_superuser=False)
+        admins = User.objects.filter(is_staff=True, is_superuser=False).select_related('profile')
         data = []
         for admin in admins:
-            profile, _ = UserProfile.objects.get_or_create(user=admin)
+            profile = getattr(admin, 'profile', None)
+            if profile is None:
+                profile, _ = UserProfile.objects.get_or_create(user=admin)
             data.append({
                 "id": admin.id,
                 "username": admin.username,

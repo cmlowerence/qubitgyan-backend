@@ -4,7 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Q, Exists, OuterRef, Prefetch
 from datetime import timedelta
 from library.models import (
     AdmissionRequest, QuizAttempt, Question, 
@@ -48,48 +48,57 @@ class StudentQuizAttemptViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"error": "Quiz not found"}, status=404)
 
         answers_data = request.data.get('answers', [])
-        
-        # PATCH 3: Multiplier Fix - Track processed questions to prevent duplicate grading
-        processed_questions = set()
-        
-        attempt = QuizAttempt.objects.create(user=request.user, quiz=quiz)
-        total_score = 0.0
 
+        # Keep only the first answer per question to prevent duplicate grading.
+        answer_map = {}
         for answer in answers_data:
             q_id = answer.get('question_id')
-            o_id = answer.get('option_id')
+            if q_id and q_id not in answer_map:
+                answer_map[q_id] = answer.get('option_id')
 
-            # Skip if we already graded this question in this payload
-            if not q_id or q_id in processed_questions:
+        # Fetch all valid questions for this quiz in one query.
+        valid_questions = {
+            q.id: q
+            for q in Question.objects.filter(id__in=answer_map.keys(), quiz=quiz)
+        }
+
+        # Fetch only the selected options that belong to those valid questions.
+        selected_option_ids = [o_id for o_id in answer_map.values() if o_id]
+        valid_options = {
+            (opt.id, opt.question_id): opt
+            for opt in Option.objects.filter(
+                id__in=selected_option_ids,
+                question_id__in=valid_questions.keys(),
+            )
+        }
+
+        attempt = QuizAttempt.objects.create(user=request.user, quiz=quiz)
+        total_score = 0.0
+        responses_to_create = []
+
+        for q_id, o_id in answer_map.items():
+            question = valid_questions.get(q_id)
+            if not question:
+                # Ignore injected foreign question IDs.
                 continue
 
-            try:
-                # PATCH 2: Cross-Quiz Fix - Ensure question actually belongs to THIS quiz
-                question = Question.objects.get(id=q_id, quiz=quiz)
-                processed_questions.add(q_id)
-                
-                selected_option = None
-                if o_id:
-                    # PATCH 1: Option Spoofing Fix - Ensure option belongs to THIS question
-                    selected_option = Option.objects.filter(id=o_id, question=question).first()
-                
-                # Record the response
-                QuestionResponse.objects.create(
-                    attempt=attempt, 
-                    question=question, 
-                    selected_option=selected_option
+            selected_option = valid_options.get((o_id, q_id)) if o_id else None
+            responses_to_create.append(
+                QuestionResponse(
+                    attempt=attempt,
+                    question=question,
+                    selected_option=selected_option,
                 )
+            )
 
-                # Calculate Marking Logic
-                if selected_option:
-                    if selected_option.is_correct:
-                        total_score += float(question.marks_positive)
-                    else:
-                        total_score -= float(question.marks_negative)
-                        
-            except Question.DoesNotExist:
-                # If they try to inject a fake/foreign question ID, quietly ignore it
-                continue
+            if selected_option:
+                if selected_option.is_correct:
+                    total_score += float(question.marks_positive)
+                else:
+                    total_score -= float(question.marks_negative)
+
+        if responses_to_create:
+            QuestionResponse.objects.bulk_create(responses_to_create)
 
         # Finalize Attempt
         attempt.total_score = total_score
@@ -118,6 +127,19 @@ class PublicCourseViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Course.objects.filter(is_published=True).order_by('-created_at')
     serializer_class = CourseSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().select_related('root_node')
+        if self.request.user.is_authenticated:
+            return queryset.annotate(
+                is_enrolled_cached=Exists(
+                    Enrollment.objects.filter(
+                        user=self.request.user,
+                        course_id=OuterRef('pk'),
+                    )
+                )
+            )
+        return queryset
 
     @action(detail=True, methods=['post'])
     def enroll(self, request, pk=None):
@@ -185,8 +207,11 @@ class StudentNotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         # Fetch GLOBAL notifications (target_user is null) OR targeted specifically to this user
+        user_status_qs = UserNotificationStatus.objects.filter(user=self.request.user)
         return Notification.objects.filter(
             Q(target_user__isnull=True) | Q(target_user=self.request.user)
+        ).prefetch_related(
+            Prefetch('usernotificationstatus_set', queryset=user_status_qs, to_attr='current_user_statuses')
         ).order_by('-created_at')
 
     @action(detail=True, methods=['post'])
