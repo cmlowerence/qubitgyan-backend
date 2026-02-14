@@ -25,6 +25,7 @@ class PublicAdmissionViewSet(viewsets.ModelViewSet):
         if self.request.method == 'GET':
             raise exceptions.MethodNotAllowed("GET")
         return super().get_queryset()
+    
 class StudentQuizAttemptViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = QuizAttemptSerializer
     permission_classes = [permissions.IsAuthenticated]

@@ -1,3 +1,4 @@
+# library\views.py
 from rest_framework import viewsets, filters, permissions, status, exceptions
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -226,3 +227,4 @@ class DashboardStatsView(APIView):
             },
             "recent_activity": recent_serialized
         })
+    

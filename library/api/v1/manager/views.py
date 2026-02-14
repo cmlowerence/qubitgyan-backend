@@ -266,6 +266,7 @@ class SuperAdminRBACViewSet(viewsets.ViewSet):
                 "id": admin.id,
                 "username": admin.username,
                 "email": admin.email,
+                "avatar": profile.avatar_url if profile.avatar_url else None,
                 "permissions": {
                     "can_approve_admissions": profile.can_approve_admissions,
                     "can_manage_content": profile.can_manage_content,
