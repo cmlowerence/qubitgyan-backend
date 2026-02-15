@@ -257,6 +257,8 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'description', 'thumbnail_url', 'is_published', 'root_node_name', 'created_at', 'is_enrolled']
 
     def get_is_enrolled(self, obj):
+        if hasattr(obj, 'is_enrolled_cached'):
+            return obj.is_enrolled_cached
         user = self.context.get('request').user if self.context and 'request' in self.context else None
         if user and user.is_authenticated:
             return Enrollment.objects.filter(user=user, course=obj).exists()
@@ -278,6 +280,10 @@ class NotificationSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'message', 'created_at', 'is_read']
 
     def get_is_read(self, obj):
+        if hasattr(obj, 'current_user_statuses'):
+            if not obj.current_user_statuses:
+                return False
+            return obj.current_user_statuses[0].is_read
         user = self.context.get('request').user if self.context and 'request' in self.context else None
         if user and user.is_authenticated:
             # Check if there is a 'read' status record for this user and this notification
@@ -326,4 +332,3 @@ class UploadedImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = UploadedImage
         fields = '__all__'
-
