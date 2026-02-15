@@ -17,7 +17,7 @@ if RENDER_EXTERNAL_HOSTNAME:
 else:
     DEBUG = True # On Pydroid, Debug is ON
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['https://qubitgyan-api.onrender.com', 'localhost']
 if not DEBUG:
     # Ensure Django knows it's behind Render's HTTPS proxy
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
