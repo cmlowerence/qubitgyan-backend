@@ -112,6 +112,16 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         requesting_user = self.request.user
+        instance = serializer.instance
+
+        # Non-superusers must have can_manage_users to update *other* users
+        if not requesting_user.is_superuser and instance != requesting_user:
+            profile, _ = UserProfile.objects.get_or_create(user=requesting_user)
+            if not profile.can_manage_users:
+                raise exceptions.PermissionDenied(
+                    "Action Forbidden: You do not have permission to manage users."
+                )
+
         requested_is_staff = serializer.validated_data.get('is_staff')
         requested_is_superuser = serializer.validated_data.get('is_superuser')
 
@@ -131,6 +141,12 @@ class UserViewSet(viewsets.ModelViewSet):
                 {"error": "Action Forbidden: Cannot delete the Superuser account."},
                 status=status.HTTP_403_FORBIDDEN
             )
+
+        # Enforce RBAC: only superuser or admins with can_manage_users may delete users
+        if not request.user.is_superuser:
+            profile, _ = UserProfile.objects.get_or_create(user=request.user)
+            if not profile.can_manage_users:
+                return Response({"error": "Action Forbidden: You do not have permission to manage users."}, status=status.HTTP_403_FORBIDDEN)
 
         if instance.is_staff and not request.user.is_superuser:
              return Response(

@@ -67,6 +67,28 @@ class UserPrivilegeSecurityTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(self.student.is_staff)
 
+    def test_admin_without_manage_users_cannot_delete_student(self):
+        from .models import UserProfile
+        profile, _ = UserProfile.objects.get_or_create(user=self.admin)
+        profile.can_manage_users = False
+        profile.save()
+
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(f'/api/v1/users/{self.student.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(User.objects.filter(id=self.student.id).exists())
+
+    def test_admin_with_manage_users_can_delete_student(self):
+        from .models import UserProfile
+        profile, _ = UserProfile.objects.get_or_create(user=self.admin)
+        profile.can_manage_users = True
+        profile.save()
+
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(f'/api/v1/users/{self.student.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(User.objects.filter(id=self.student.id).exists())
+
 
 class GlobalSearchTests(APITestCase):
     def test_resource_url_uses_resource_node_id(self):
@@ -93,6 +115,27 @@ class GlobalSearchTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         resource_result = next(item for item in response.data if item['type'] == 'RESOURCE' and item['id'] == resource.id)
         self.assertEqual(resource_result['url'], f'/admin/tree/{node.id}')
+
+
+class MediaUploadTests(APITestCase):
+    def setUp(self):
+        # endpoint is restricted to superusers in the viewset
+        self.superuser = User.objects.create_superuser(username='rootm', email='rootm@example.com', password='rootpass')
+        self.client.force_authenticate(user=self.superuser)
+
+    def test_upload_requires_name_and_file(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        img = SimpleUploadedFile('x.png', b'pngcontent', content_type='image/png')
+
+        # Missing name -> 400
+        resp = self.client.post('/api/v1/manager/media/upload/', {'file': img}, format='multipart')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Both 'file' and 'name' are required", str(resp.data))
+
+        # Missing file -> 400
+        resp2 = self.client.post('/api/v1/manager/media/upload/', {'name': 'x.png'}, format='multipart')
+        self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class UserProfileTests(APITestCase):

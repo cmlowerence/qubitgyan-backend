@@ -104,6 +104,11 @@ class UserSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     is_suspended = serializers.SerializerMethodField()
 
+    # Permission flags (read-only) propagated from UserProfile
+    can_approve_admissions = serializers.SerializerMethodField()
+    can_manage_content = serializers.SerializerMethodField()
+    can_manage_users = serializers.SerializerMethodField()
+
     # Accept a write-only `profile` object in incoming payloads (nested serializer)
     profile = UserProfileInputSerializer(write_only=True, required=False)
 
@@ -112,7 +117,9 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
             'is_staff', 'is_superuser', 'password',
-            'created_by', 'avatar_url', 'is_suspended', 'profile'
+            'created_by', 'avatar_url', 'is_suspended',
+            'can_approve_admissions', 'can_manage_content', 'can_manage_users',
+            'profile'
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
@@ -129,6 +136,21 @@ class UserSerializer(serializers.ModelSerializer):
     def get_is_suspended(self, obj):
         if hasattr(obj, 'profile'):
             return obj.profile.is_suspended
+        return False
+
+    def get_can_approve_admissions(self, obj):
+        if hasattr(obj, 'profile'):
+            return bool(obj.profile.can_approve_admissions)
+        return False
+
+    def get_can_manage_content(self, obj):
+        if hasattr(obj, 'profile'):
+            return bool(obj.profile.can_manage_content)
+        return False
+
+    def get_can_manage_users(self, obj):
+        if hasattr(obj, 'profile'):
+            return bool(obj.profile.can_manage_users)
         return False
 
     def create(self, validated_data):
@@ -257,8 +279,6 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'description', 'thumbnail_url', 'is_published', 'root_node_name', 'created_at', 'is_enrolled']
 
     def get_is_enrolled(self, obj):
-        if hasattr(obj, 'is_enrolled_cached'):
-            return obj.is_enrolled_cached
         user = self.context.get('request').user if self.context and 'request' in self.context else None
         if user and user.is_authenticated:
             return Enrollment.objects.filter(user=user, course=obj).exists()
@@ -280,10 +300,6 @@ class NotificationSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'message', 'created_at', 'is_read']
 
     def get_is_read(self, obj):
-        if hasattr(obj, 'current_user_statuses'):
-            if not obj.current_user_statuses:
-                return False
-            return obj.current_user_statuses[0].is_read
         user = self.context.get('request').user if self.context and 'request' in self.context else None
         if user and user.is_authenticated:
             # Check if there is a 'read' status record for this user and this notification
@@ -332,3 +348,4 @@ class UploadedImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = UploadedImage
         fields = '__all__'
+
