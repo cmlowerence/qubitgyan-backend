@@ -79,6 +79,11 @@ class Resource(models.Model):
 
     class Meta:
         ordering = ['order', 'created_at']
+        indexes = [
+            models.Index(fields=["node"]),
+            models.Index(fields=["resource_type"]),
+            models.Index(fields=["created_at"]),
+        ]
 
     def __str__(self):
         return self.title

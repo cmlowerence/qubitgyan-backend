@@ -6,6 +6,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from django.utils import timezone
 from django.db.models import Q, Exists, OuterRef, Prefetch
 from datetime import timedelta
+from library.services.email_service import queue_email
 from library.models import (
     AdmissionRequest, QuizAttempt, Question, 
     Option, QuestionResponse, Quiz, StudentProgress, Course, Enrollment, Notification,UserNotificationStatus, UserProfile, Bookmark, Resource
@@ -19,7 +20,27 @@ class PublicAdmissionViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'admissions' # Limits to 5/day per IP (set in settings.py)
+    def perform_create(self, serializer):
+        admission = serializer.save()
 
+        subject = "Application Received — QubitGyan"
+
+        body = (
+            f"Hello {admission.student_name},\n\n"
+            f"We have received your application.\n"
+            f"Our team will review it shortly.\n\n"
+            f"You’ll receive login credentials once approved.\n\n"
+            f"— QubitGyan Team"
+        )
+
+        html_body = f"""
+        <h2>Application Received</h2>
+        <p>Hello {admission.student_name},</p>
+        <p>Your application has been successfully submitted.</p>
+        <p>We’ll notify you once it’s approved.</p>
+        """
+
+        queue_email(admission.email, subject, body, html_body)
     def get_queryset(self):
         # Public users cannot GET the list of applications
         if self.request.method == 'GET':

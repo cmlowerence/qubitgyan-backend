@@ -40,9 +40,26 @@ class ResourceSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         drive_link = attrs.pop('google_drive_link', None)
+
+        # Extract Google Drive ID if link provided
         if drive_link:
             match = re.search(r'[-\w]{25,}', drive_link)
             attrs['google_drive_id'] = match.group() if match else drive_link
+
+        r_type = attrs.get("resource_type") or getattr(self.instance, "resource_type", None)
+        drive_id = attrs.get("google_drive_id") or getattr(self.instance, "google_drive_id", None)
+        external_url = attrs.get("external_url") or getattr(self.instance, "external_url", None)
+        content_text = attrs.get("content_text") or getattr(self.instance, "content_text", None)
+
+        if r_type == "PDF" and not drive_id:
+            raise serializers.ValidationError("PDF resources must include a Google Drive file.")
+
+        if r_type == "VIDEO" and not external_url:
+            raise serializers.ValidationError("Video resources must include an external video URL.")
+
+        if r_type == "EXERCISE" and not content_text:
+            raise serializers.ValidationError("Exercises must include text content.")
+
         return attrs
 
     def get_preview_link(self, obj):
@@ -67,12 +84,26 @@ class ChildNodeSerializer(serializers.ModelSerializer):
             'items_count'
         ]
 
-    def get_children(self, obj):
-        children_qs = obj.children.all().annotate(
-            resource_count=Count('resources', distinct=True),
-            items_count=Count('children', distinct=True),
-        )
-        return ChildNodeSerializer(children_qs, many=True).data
+def get_children(self, obj):
+    request = self.context.get("request")
+    depth = int(request.query_params.get("depth", 10)) if request else 10
+
+    if depth <= 0:
+        return []
+
+    children_qs = obj.children.all().annotate(
+        resource_count=Count('resources', distinct=True),
+        items_count=Count('children', distinct=True),
+    )
+
+    serializer = ChildNodeSerializer(
+        children_qs,
+        many=True,
+        context={"request": request}
+    )
+
+    return serializer.data
+
 
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()

@@ -1,23 +1,46 @@
 from rest_framework import permissions
 
+
 class IsAdminOrReadOnly(permissions.BasePermission):
-    """Students can read. Admins can edit ONLY IF they have the 'can_manage_content' flag."""
+    """
+    Students → Read only
+    Staff → Edit ONLY if can_manage_content = True
+    Superuser → Full access
+    """
+
     def has_permission(self, request, view):
+
+        # 1️⃣ Public read access
         if request.method in permissions.SAFE_METHODS:
             return True
-            
-        # Superusers can do everything
-        if request.user and request.user.is_superuser:
+
+        # 2️⃣ Must be authenticated for write actions
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        # 3️⃣ Superusers → full control
+        if request.user.is_superuser:
             return True
 
-        # Standard Admins need the specific content flag
-        if request.user and request.user.is_staff:
-            if hasattr(request.user, 'profile') and request.user.profile.can_manage_content:
-                return True
+        # 4️⃣ Staff with content permission
+        if request.user.is_staff:
+            profile = getattr(request.user, "profile", None)
+            return getattr(profile, "can_manage_content", False)
 
         return False
 
+
 class IsSuperAdminOnly(permissions.BasePermission):
-    """Strictly for endpoints that control the app's core settings and permissions"""
+    """
+    Strictly for system-level controls:
+    - RBAC
+    - Email dispatch
+    - Media storage
+    """
+
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_superuser)
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.is_superuser
+        )

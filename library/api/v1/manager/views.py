@@ -13,6 +13,9 @@ from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
 from library.permissions import IsSuperAdminOnly
+from library.services.email_service import queue_email
+from library.models import QueuedEmail
+from library.services.email_service import send_queued_email
 
 from library.models import (
     AdmissionRequest, UserProfile, AdminAuditLog, 
@@ -114,13 +117,12 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
                 """
                 
                 # 3. Save to Queue
-                QueuedEmail.objects.create(
-                    recipient_email=admission.email,
+                queue_email(
+                    recipient=admission.email,
                     subject="Welcome to QubitGyan - Application Approved!",
                     body=plain_text_body,
                     html_body=html_body
                 )
-
             admission.status = status_val
             admission.reviewed_by = request.user
             admission.review_remarks = serializer.validated_data.get('review_remarks', '')
@@ -181,6 +183,61 @@ class EmailManagementViewSet(viewsets.ViewSet):
                 failed_count += 1
 
         return Response({"message": "Batch dispatch completed.", "emails_sent": sent_count, "emails_failed": failed_count})
+    
+    @action(detail=False, methods=['get'])
+    def pending(self, request):
+        emails = QueuedEmail.objects.filter(is_sent=False)
+        data = [
+            {
+                "id": e.id,
+                "recipient": e.recipient_email,
+                "subject": e.subject,
+                "created_at": e.created_at,
+                "error": e.error_message,
+            }
+            for e in emails
+        ]
+        return Response(data)
+
+
+    @action(detail=False, methods=['get'])
+    def sent(self, request):
+        emails = QueuedEmail.objects.filter(is_sent=True)
+        data = [
+            {
+                "id": e.id,
+                "recipient": e.recipient_email,
+                "subject": e.subject,
+                "sent_at": e.sent_at,
+            }
+            for e in emails
+        ]
+        return Response(data)
+
+
+    @action(detail=False, methods=['get'])
+    def failed(self, request):
+        emails = QueuedEmail.objects.filter(is_sent=False).exclude(error_message="")
+        data = [
+            {
+                "id": e.id,
+                "recipient": e.recipient_email,
+                "subject": e.subject,
+                "error": e.error_message,
+            }
+            for e in emails
+        ]
+        return Response(data)
+
+
+    @action(detail=True, methods=['post'])
+    def retry(self, request, pk=None):
+        email = QueuedEmail.objects.get(pk=pk)
+        success = send_queued_email(email)
+
+        if success:
+            return Response({"status": "Email sent successfully"})
+        return Response({"status": "Retry failed", "error": email.error_message})
 
 class QuizManagementViewSet(viewsets.ModelViewSet):
     """

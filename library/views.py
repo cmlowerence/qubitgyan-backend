@@ -1,7 +1,10 @@
 # library\views.py
+import logging
+from psycopg import logger
 from rest_framework import viewsets, filters, permissions, status, exceptions
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
 from django.db.models import Count, Q
 from django.contrib.auth.models import User
@@ -29,38 +32,48 @@ class ResourceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = Resource.objects.all()
-        
-        node_id = self.request.query_params.get('node', None)
-        if node_id:
-            queryset = queryset.filter(node_id=node_id).order_by('order')
-            return queryset
 
-        r_type = self.request.query_params.get('type', None)
+        node_id = self.request.query_params.get('node')
+        r_type = self.request.query_params.get('type')
+        context_id = self.request.query_params.get('context')
+
+        if node_id:
+            queryset = queryset.filter(node_id=node_id)
+
         if r_type and r_type != 'ALL':
             queryset = queryset.filter(resource_type=r_type)
 
-        context_id = self.request.query_params.get('context', None)
         if context_id and context_id != 'ALL':
             queryset = queryset.filter(contexts__id=context_id)
 
-        return queryset.order_by('-created_at')
+        return queryset.order_by('order')
+
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAdminUser])
     @transaction.atomic
     def reorder(self, request):
         ids = request.data.get('ids', [])
-        if not ids:
-            return Response({'error': 'No IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
 
-        id_positions = {resource_id: index for index, resource_id in enumerate(ids)}
-        resources = list(Resource.objects.filter(id__in=id_positions.keys()))
+        if not ids:
+            raise ValidationError("No resource IDs provided.")
+
+        if len(ids) != len(set(ids)):
+            raise ValidationError("Duplicate IDs detected.")
+
+        resources = Resource.objects.filter(id__in=ids)
+
+        if resources.count() != len(ids):
+            raise ValidationError("Some resource IDs are invalid or missing.")
+
+        id_positions = {rid: index for index, rid in enumerate(ids)}
+
         for resource in resources:
             resource.order = id_positions[resource.id]
 
-        if resources:
-            Resource.objects.bulk_update(resources, ['order'])
-            
-        return Response({'status': 'order updated'}, status=status.HTTP_200_OK)
+        Resource.objects.bulk_update(resources, ['order'])
+
+        return Response({"status": "order updated"}, status=status.HTTP_200_OK)
+
 
 class KnowledgeNodeViewSet(viewsets.ModelViewSet):
     serializer_class = KnowledgeNodeSerializer
@@ -88,10 +101,11 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def me(self, request):
+        logger = logging.getLogger(__name__)
         try:
             UserProfile.objects.get_or_create(user=request.user)
         except Exception as e:
-            print(f"Profile healing warning: {e}")
+            logger.warning(f"Profile healing warning: {str(e)}")
 
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
