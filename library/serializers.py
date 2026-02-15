@@ -94,17 +94,25 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         )
         return ChildNodeSerializer(children_qs, many=True).data
 
+class UserProfileInputSerializer(serializers.Serializer):
+    avatar_url = serializers.URLField(required=False, allow_blank=True)
+    is_suspended = serializers.BooleanField(required=False)
+
+
 class UserSerializer(serializers.ModelSerializer):
     created_by = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
     is_suspended = serializers.SerializerMethodField()
+
+    # Accept a write-only `profile` object in incoming payloads (nested serializer)
+    profile = UserProfileInputSerializer(write_only=True, required=False)
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
             'is_staff', 'is_superuser', 'password',
-            'created_by', 'avatar_url', 'is_suspended'
+            'created_by', 'avatar_url', 'is_suspended', 'profile'
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
@@ -124,13 +132,20 @@ class UserSerializer(serializers.ModelSerializer):
         return False
 
     def create(self, validated_data):
-        profile_data = validated_data.pop('profile', {})
+        # Prefer validated nested `profile`, but accept legacy top-level `avatar_url` if present
+        profile_data = validated_data.pop('profile', {}) or {}
+        if not profile_data and 'avatar_url' in self.initial_data:
+            profile_data = {'avatar_url': self.initial_data.get('avatar_url')}
+
         user = User.objects.create_user(**validated_data)
         UserProfile.objects.create(user=user, **profile_data)
         return user
 
     def update(self, instance, validated_data):
-        profile_data = self.initial_data.get('profile', {})
+        # Prefer validated nested `profile` from payload; fall back to initial_data (legacy)
+        profile_data = validated_data.pop('profile', None)
+        if profile_data is None:
+            profile_data = self.initial_data.get('profile', {}) or {}
 
         for attr, value in validated_data.items():
             if attr == 'password':
@@ -138,6 +153,10 @@ class UserSerializer(serializers.ModelSerializer):
             else:
                 setattr(instance, attr, value)
         instance.save()
+
+        # Also accept legacy top-level `avatar_url` in request body
+        if not profile_data and 'avatar_url' in self.initial_data:
+            profile_data = {'avatar_url': self.initial_data.get('avatar_url')}
 
         if profile_data:
             profile, _ = UserProfile.objects.get_or_create(user=instance)

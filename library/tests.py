@@ -95,6 +95,65 @@ class GlobalSearchTests(APITestCase):
         self.assertEqual(resource_result['url'], f'/admin/tree/{node.id}')
 
 
+class UserProfileTests(APITestCase):
+    def setUp(self):
+        self.superuser = User.objects.create_superuser(
+            username='root2',
+            email='root2@example.com',
+            password='rootpass123'
+        )
+        self.client.force_authenticate(user=self.superuser)
+
+    def test_create_user_with_nested_profile_avatar(self):
+        resp = self.client.post('/api/v1/users/', {
+            'username': 'newuser',
+            'email': 'newuser@example.com',
+            'password': 'strongpass123',
+            'is_staff': False,
+            'profile': {'avatar_url': 'https://example.com/a.png'}
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        from .models import UserProfile
+        user = User.objects.get(username='newuser')
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(profile.avatar_url, 'https://example.com/a.png')
+
+    def test_update_user_with_nested_profile_avatar_and_clear(self):
+        user = User.objects.create_user(username='upuser', email='u@example.com', password='pwd123')
+        from .models import UserProfile
+        UserProfile.objects.create(user=user, avatar_url='https://old.example/x.png')
+
+        # update via nested profile
+        resp = self.client.patch(f'/api/v1/users/{user.id}/', {
+            'first_name': 'Updated',
+            'profile': {'avatar_url': 'https://new.example/y.png'}
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(profile.avatar_url, 'https://new.example/y.png')
+
+        # clear avatar using empty string
+        resp2 = self.client.patch(f'/api/v1/users/{user.id}/', {
+            'profile': {'avatar_url': ''}
+        }, format='json')
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+        profile.refresh_from_db()
+        self.assertEqual(profile.avatar_url, '')
+
+    def test_update_user_with_flat_avatar_field_fallback(self):
+        user = User.objects.create_user(username='flatuser', email='flat@example.com', password='pwd123')
+        from .models import UserProfile
+        UserProfile.objects.create(user=user, avatar_url='https://old.flat/a.png')
+
+        # legacy payload with top-level avatar_url should still work
+        resp = self.client.patch(f'/api/v1/users/{user.id}/', {
+            'avatar_url': 'https://flat.new/b.png'
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(profile.avatar_url, 'https://flat.new/b.png')
+
+
 class KnowledgeNodeTreeFormatTests(APITestCase):
     def test_nodes_list_returns_deeply_nested_children_for_student_app(self):
         from .models import KnowledgeNode
