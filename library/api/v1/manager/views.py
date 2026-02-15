@@ -326,7 +326,9 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
         
         try:
             # 1. Connect to Supabase
-            supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+            # Use the service-role key for server-side operations; fall back to legacy key if present
+            supabase_key = getattr(settings, 'SUPABASE_SR_KEY', None) or getattr(settings, 'SUPABASE_KEY', None)
+            supabase: Client = create_client(settings.SUPABASE_URL, supabase_key)
             
             # 2. Delete the actual file from the 'media' bucket
             supabase.storage.from_('media').remove([image_record.supabase_path])
@@ -351,10 +353,11 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
 
         # 1. Connect to Supabase
         url: str = settings.SUPABASE_URL
-        key: str = settings.SUPABASE_SR_KEY
-        if not url or url == 'https://sslaifkboguczckjlztq.supabase.co':
+        # prefer SR (service role) key for server-side uploads; allow legacy SUPABASE_KEY for existing deployments
+        key: str = getattr(settings, 'SUPABASE_SR_KEY', None) or getattr(settings, 'SUPABASE_KEY', None)
+        if not url or not key:
             return Response({"error": "Supabase keys missing from server config."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+
         supabase: Client = create_client(url, key)
         file_bytes = file.read()
         file_ext = file.name.split('.')[-1]
