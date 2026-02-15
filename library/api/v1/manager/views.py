@@ -22,7 +22,7 @@ from library.models import (
 from library.serializers import (
     AdmissionRequestSerializer, AdminAdmissionApprovalSerializer,
     QuizSerializer, CourseSerializer, Course, NotificationSerializer, 
-    Notification, UploadedImageSerializer
+    Notification, UploadedImageSerializer, UserSerializer
 )
 
 class ManagerAdmissionViewSet(viewsets.ModelViewSet):
@@ -309,7 +309,9 @@ class SuperAdminRBACViewSet(viewsets.ViewSet):
             action=f"Updated permissions for admin: {admin_user.username}"
         )
 
-        return Response({"status": "Permissions updated successfully!"})
+        # Return the updated user payload so clients can refresh caches immediately
+        user_data = UserSerializer(admin_user).data
+        return Response({"status": "Permissions updated successfully!", "user": user_data})
     
 class ImageManagementViewSet(viewsets.ModelViewSet):
     """Superadmin endpoint for uploading, listing, and deleting images"""

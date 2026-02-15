@@ -89,6 +89,38 @@ class UserPrivilegeSecurityTests(APITestCase):
         self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
         self.assertFalse(User.objects.filter(id=self.student.id).exists())
 
+    def test_superadmin_update_permissions_affect_admin_immediately(self):
+        """Superuser updates an admin's RBAC flag and it should take effect immediately."""
+        from .models import UserProfile
+
+        # ensure admin initially cannot manage users
+        profile, _ = UserProfile.objects.get_or_create(user=self.admin)
+        profile.can_manage_users = False
+        profile.save()
+
+        # admin should NOT be able to delete a student now
+        self.client.force_authenticate(user=self.admin)
+        resp = self.client.delete(f'/api/v1/users/{self.student.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(User.objects.filter(id=self.student.id).exists())
+
+        # superuser enables the permission via RBAC endpoint
+        self.client.force_authenticate(user=self.superuser)
+        resp2 = self.client.patch(f'/api/v1/manager/rbac/{self.admin.id}/update_permissions/', {'permissions': {'can_manage_users': True}}, format='json')
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+        self.assertIn('user', resp2.data)
+        self.assertTrue(resp2.data['user'].get('can_manage_users') or resp2.data['user'].get('profile', {}).get('can_manage_users'))
+
+        # reload profile from DB and ensure it's updated
+        profile.refresh_from_db()
+        self.assertTrue(profile.can_manage_users)
+
+        # now admin should be able to delete the student
+        self.client.force_authenticate(user=self.admin)
+        resp3 = self.client.delete(f'/api/v1/users/{self.student.id}/')
+        self.assertEqual(resp3.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(User.objects.filter(id=self.student.id).exists())
+
 
 class GlobalSearchTests(APITestCase):
     def test_resource_url_uses_resource_node_id(self):
