@@ -119,7 +119,6 @@ class ChildNodeSerializer(serializers.ModelSerializer):
 
         return serializer.data
 
-
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     resource_count = serializers.IntegerField(read_only=True)
@@ -167,6 +166,7 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
         )
 
         return serializer.data
+
 
 class UserProfileInputSerializer(serializers.Serializer):
     avatar_url = serializers.URLField(required=False, allow_blank=True)
@@ -379,6 +379,7 @@ class NotificationSerializer(serializers.ModelSerializer):
         if statuses:
             return statuses[0].is_read
         return False
+    
     
     
 class ChangePasswordSerializer(serializers.Serializer):

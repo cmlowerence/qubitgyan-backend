@@ -82,12 +82,22 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
     search_fields = ['name']
 
     def get_queryset(self):
-        base_qs = KnowledgeNode.objects.annotate(resource_count=Count('resources')).order_by('order', 'name')
+        base_qs = KnowledgeNode.objects.select_related('parent').prefetch_related(
+            'children',
+            'resources'
+        ).annotate(
+            resource_count=Count('resources', distinct=True),
+            items_count=Count('children', distinct=True),
+        ).order_by('order', 'name')
+    
         if self.action == 'list':
             if self.request.query_params.get('all', 'false').lower() == 'true':
                 return base_qs
+    
             return base_qs.filter(parent__isnull=True)
+    
         return base_qs
+
 
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer

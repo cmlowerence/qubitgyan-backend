@@ -227,30 +227,84 @@ class StudentNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        # Fetch GLOBAL notifications (target_user is null) OR targeted specifically to this user
-        user_status_qs = UserNotificationStatus.objects.filter(user=self.request.user)
-        return Notification.objects.filter(
-            Q(target_user__isnull=True) | Q(target_user=self.request.user)
-        ).prefetch_related(
-            Prefetch('usernotificationstatus_set', queryset=user_status_qs, to_attr='current_user_statuses')
-        ).order_by('-created_at')
-
-    @action(detail=True, methods=['post'])
-    def mark_read(self, request, pk=None):
-        """Creates a record saying this specific student read this message"""
-        notification = self.get_object()
-        
-        status_record, _ = UserNotificationStatus.objects.get_or_create(
-            user=request.user, 
-            notification=notification
-        )
-        
-        status_record.is_read = True
-        status_record.read_at = timezone.now()
-        status_record.save()
-        
-        return Response({"status": "Marked as read"}, status=status.HTTP_200_OK)
+        user = self.request.user
     
+        user_status_qs = UserNotificationStatus.objects.filter(user=user)
+    
+        return Notification.objects.filter(
+            Q(target_user__isnull=True) | Q(target_user=user)
+        ).prefetch_related(
+            Prefetch(
+                'usernotificationstatus_set',
+                queryset=user_status_qs,
+                to_attr='current_user_statuses'
+            )
+        ).order_by('-created_at')
+    
+    @action(detail=False, methods=['post'])
+    def mark_all_read(self, request):
+        """
+        Marks all notifications as read for the logged-in user.
+        """
+    
+        notifications = self.get_queryset()
+    
+        status_objects = []
+    
+        for notification in notifications:
+            status_objects.append(
+                UserNotificationStatus(
+                    user=request.user,
+                    notification=notification,
+                    is_read=True,
+                    read_at=timezone.now()
+                )
+            )
+    
+        UserNotificationStatus.objects.bulk_create(
+            status_objects,
+            ignore_conflicts=True
+        )
+    
+        UserNotificationStatus.objects.filter(
+            user=request.user
+        ).update(is_read=True, read_at=timezone.now())
+    
+        return Response({"status": "All notifications marked as read"})
+   
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        """
+        Returns unread notification count for header badge.
+        """
+    
+        total_notifications = self.get_queryset().count()
+    
+        read_count = UserNotificationStatus.objects.filter(
+            user=request.user,
+            is_read=True
+        ).count()
+    
+        unread = total_notifications - read_count
+    
+        return Response({"unread_count": unread})
+         
+        @action(detail=True, methods=['post'])
+        def mark_read(self, request, pk=None):
+            """Creates a record saying this specific student read this message"""
+            notification = self.get_object()
+            
+            status_record, _ = UserNotificationStatus.objects.get_or_create(
+                user=request.user, 
+                notification=notification
+            )
+            
+            status_record.is_read = True
+            status_record.read_at = timezone.now()
+            status_record.save()
+            
+            return Response({"status": "Marked as read"}, status=status.HTTP_200_OK)
+        
 class ChangePasswordView(generics.UpdateAPIView):
     """
     Endpoint for students (or admins) to change their password.
