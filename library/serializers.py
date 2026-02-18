@@ -77,53 +77,96 @@ class ChildNodeSerializer(serializers.ModelSerializer):
     class Meta:
         model = KnowledgeNode
         fields = [
-            'id', 'name', 'node_type', 'parent',
-            'order', 'thumbnail_url', 'is_active',
+            'id',
+            'name',
+            'node_type',
+            'parent',
+            'order',
+            'thumbnail_url',
+            'is_active',
             'children',
             'resource_count',
-            'items_count'
+            'items_count',
         ]
 
-def get_children(self, obj):
-    request = self.context.get("request")
-    depth = int(request.query_params.get("depth", 10)) if request else 10
+    def get_children(self, obj):
+        request = self.context.get("request")
 
-    if depth <= 0:
-        return []
+        # Default depth = 10 (full tree)
+        depth = 10
+        if request:
+            try:
+                depth = int(request.query_params.get("depth", 10))
+            except ValueError:
+                depth = 10
 
-    children_qs = obj.children.all().annotate(
-        resource_count=Count('resources', distinct=True),
-        items_count=Count('children', distinct=True),
-    )
+        # Stop recursion
+        if depth <= 0:
+            return []
 
-    serializer = ChildNodeSerializer(
-        children_qs,
-        many=True,
-        context={"request": request}
-    )
+        # Reduce depth for next level
+        self.context["request"].query_params._mutable = True
+        self.context["request"].query_params["depth"] = str(depth - 1)
+        self.context["request"].query_params._mutable = False
 
-    return serializer.data
+        children_qs = obj.children.all()
+
+        serializer = ChildNodeSerializer(
+            children_qs,
+            many=True,
+            context=self.context
+        )
+
+        return serializer.data
 
 
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
-    resource_count = serializers.IntegerField(read_only=True, required=False)
-    items_count = serializers.IntegerField(read_only=True, required=False)
+    resource_count = serializers.IntegerField(read_only=True)
+    items_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = KnowledgeNode
         fields = [
-            'id', 'name', 'node_type', 'parent',
-            'order', 'thumbnail_url', 'is_active',
-            'children', 'resource_count', 'items_count'
+            'id',
+            'name',
+            'node_type',
+            'parent',
+            'order',
+            'thumbnail_url',
+            'is_active',
+            'children',
+            'resource_count',
+            'items_count',
         ]
 
     def get_children(self, obj):
-        children_qs = obj.children.all().annotate(
-            resource_count=Count('resources', distinct=True),
-            items_count=Count('children', distinct=True),
+        request = self.context.get("request")
+
+        depth = 10
+        if request:
+            try:
+                depth = int(request.query_params.get("depth", 10))
+            except ValueError:
+                depth = 10
+
+        if depth <= 0:
+            return []
+
+        # Reduce depth
+        self.context["request"].query_params._mutable = True
+        self.context["request"].query_params["depth"] = str(depth - 1)
+        self.context["request"].query_params._mutable = False
+
+        children_qs = obj.children.all()
+
+        serializer = ChildNodeSerializer(
+            children_qs,
+            many=True,
+            context=self.context
         )
-        return ChildNodeSerializer(children_qs, many=True).data
+
+        return serializer.data
 
 class UserProfileInputSerializer(serializers.Serializer):
     avatar_url = serializers.URLField(required=False, allow_blank=True)
@@ -331,12 +374,12 @@ class NotificationSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'message', 'created_at', 'is_read']
 
     def get_is_read(self, obj):
-        user = self.context.get('request').user if self.context and 'request' in self.context else None
-        if user and user.is_authenticated:
-            # Check if there is a 'read' status record for this user and this notification
-            status_record = UserNotificationStatus.objects.filter(user=user, notification=obj).first()
-            return status_record.is_read if status_record else False
+        # Uses prefetched cache instead of DB query
+        statuses = getattr(obj, 'current_user_statuses', [])
+        if statuses:
+            return statuses[0].is_read
         return False
+    
     
 class ChangePasswordSerializer(serializers.Serializer):
     """Securely handles password changes for authenticated users"""

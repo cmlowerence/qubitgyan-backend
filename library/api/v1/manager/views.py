@@ -371,51 +371,60 @@ class SuperAdminRBACViewSet(viewsets.ViewSet):
         return Response({"status": "Permissions updated successfully!", "user": user_data})
     
 class ImageManagementViewSet(viewsets.ModelViewSet):
-    """Superadmin endpoint for uploading, listing, and deleting images"""
+    """Superadmin endpoint for uploading, listing, deleting, and browsing images"""
+
     queryset = UploadedImage.objects.all().order_by('-uploaded_at')
     serializer_class = UploadedImageSerializer
-    permission_classes = [IsSuperAdminOnly] 
+    permission_classes = [IsSuperAdminOnly]
     parser_classes = [MultiPartParser, FormParser]
 
     def destroy(self, request, *args, **kwargs):
         """Deletes the image from Django AND frees up space in Supabase"""
         image_record = self.get_object()
-        
+
         try:
-            # 1. Connect to Supabase
-            # Use the service-role key for server-side operations; fall back to legacy key if present
             supabase_key = getattr(settings, 'SUPABASE_SR_KEY', None) or getattr(settings, 'SUPABASE_KEY', None)
             supabase: Client = create_client(settings.SUPABASE_URL, supabase_key)
-            
-            # 2. Delete the actual file from the 'media' bucket
+
             supabase.storage.from_('media').remove([image_record.supabase_path])
-            
-            # 3. Delete the tracking record from Django DB
             image_record.delete()
-            
-            return Response({"message": "Image deleted and storage freed!"}, status=status.HTTP_204_NO_CONTENT)
-            
+
+            return Response(
+                {"message": "Image deleted and storage freed!"},
+                status=status.HTTP_204_NO_CONTENT
+            )
+
         except Exception as e:
-            return Response({"error": f"Failed to delete from Supabase: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"error": f"Failed to delete from Supabase: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @action(detail=False, methods=['post'])
     def upload(self, request):
         """Uploads a file to Supabase and returns the public URL"""
+
         file = request.FILES.get('file')
         name = request.data.get('name')
         category = request.data.get('category', 'general')
 
         if not file or not name:
-            return Response({"error": "Both 'file' and 'name' are required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Both 'file' and 'name' are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # 1. Connect to Supabase
         url: str = settings.SUPABASE_URL
-        # prefer SR (service role) key for server-side uploads; allow legacy SUPABASE_KEY for existing deployments
         key: str = getattr(settings, 'SUPABASE_SR_KEY', None) or getattr(settings, 'SUPABASE_KEY', None)
+
         if not url or not key:
-            return Response({"error": "Supabase keys missing from server config."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"error": "Supabase keys missing from server config."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
         supabase: Client = create_client(url, key)
+
         file_bytes = file.read()
         file_ext = file.name.split('.')[-1]
         safe_name = name.replace(' ', '_').lower()
@@ -423,12 +432,14 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
 
         try:
             supabase.storage.from_('media').upload(
-                file_path, 
-                file_bytes, 
+                file_path,
+                file_bytes,
                 {"content-type": file.content_type}
             )
+
             public_url = supabase.storage.from_('media').get_public_url(file_path)
-            image_record = UploadedImage.objects.create(
+
+            UploadedImage.objects.create(
                 name=name,
                 category=category,
                 supabase_path=file_path,
@@ -437,24 +448,30 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
                 uploaded_by=request.user
             )
 
-            return Response({
-                "message": "Upload successful",
-                "public_url": public_url,
-                "category": category,
-                "size_kb": round(file.size / 1024, 2)
-            }, status=status.HTTP_201_CREATED)
+            return Response(
+                {
+                    "message": "Upload successful",
+                    "public_url": public_url,
+                    "category": category,
+                    "size_kb": round(file.size / 1024, 2)
+                },
+                status=status.HTTP_201_CREATED
+            )
 
         except Exception as e:
-            return Response({"error": f"Supabase Upload Failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"error": f"Supabase Upload Failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @action(detail=False, methods=['get'])
     def storage_status(self, request):
         """Calculates how much of the 1GB free tier is used"""
-        # Sum all file sizes in the database
+
         result = UploadedImage.objects.aggregate(Sum('file_size_bytes'))
         total_bytes = result['file_size_bytes__sum'] or 0
-        
-        max_bytes = 1073741824 # Exactly 1 GB
+
+        max_bytes = 1073741824  # 1GB
         remaining_bytes = max_bytes - total_bytes
 
         return Response({
@@ -463,4 +480,45 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
             "percentage_used": round((total_bytes / max_bytes) * 100, 2),
             "total_files_uploaded": UploadedImage.objects.count()
         })
-    
+
+    # 🆕 --- MEDIA LIBRARY BROWSER ENDPOINT ---
+    @action(detail=False, methods=['get'])
+    def library(self, request):
+        """
+        Admin Media Library Browser
+        Allows filtering, searching, and selecting uploaded files.
+        """
+
+        queryset = UploadedImage.objects.all().order_by('-uploaded_at')
+
+        category = request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(category__iexact=category)
+
+        search = request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(name__icontains=search)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = UploadedImageSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = UploadedImageSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    # 🆕 --- CATEGORY LIST ENDPOINT ---
+    @action(detail=False, methods=['get'])
+    def categories(self, request):
+        """
+        Returns all unique media categories.
+        Useful for admin dropdown filters.
+        """
+
+        categories = (
+            UploadedImage.objects
+            .values_list('category', flat=True)
+            .distinct()
+        )
+
+        return Response(list(categories))
