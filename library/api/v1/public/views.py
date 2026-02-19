@@ -21,7 +21,8 @@ from library.serializers import (
     AdmissionRequestSerializer, QuizAttemptSerializer,
     StudentQuizReadSerializer, CourseSerializer,
     NotificationSerializer, ChangePasswordSerializer,
-    MyProfileSerializer, BookmarkSerializer
+    MyProfileSerializer, BookmarkSerializer,
+    StudentProgressSerializer
 )
 
 # ---------------------------------------------------
@@ -336,3 +337,94 @@ class StudentNotificationViewSet(
         cache.set(cache_key, unread, timeout=120)
 
         return Response({"unread_count": unread})
+
+
+# ---------------------------------------------------
+# GAMIFICATION
+# ---------------------------------------------------
+
+class GamificationViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def list(self, request):
+        profile, _ = UserProfile.objects.get_or_create(user=request.user)
+        return Response({
+            "current_streak": profile.current_streak,
+            "longest_streak": profile.longest_streak,
+            "total_learning_minutes": profile.total_learning_minutes,
+            "last_active_date": profile.last_active_date,
+        })
+
+
+# ---------------------------------------------------
+# CHANGE PASSWORD
+# ---------------------------------------------------
+
+class ChangePasswordView(generics.UpdateAPIView):
+    serializer_class = ChangePasswordSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        user = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if not user.check_password(serializer.validated_data['old_password']):
+            return Response(
+                {"old_password": "Wrong password."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(serializer.validated_data['new_password'])
+        user.save()
+        return Response({"status": "Password updated successfully."})
+
+
+# ---------------------------------------------------
+# MY PROFILE
+# ---------------------------------------------------
+
+class MyProfileView(generics.RetrieveAPIView):
+    serializer_class = MyProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        profile, _ = UserProfile.objects.get_or_create(user=self.request.user)
+        return profile
+
+
+# ---------------------------------------------------
+# BOOKMARKS
+# ---------------------------------------------------
+
+class BookmarkViewSet(viewsets.ModelViewSet):
+    serializer_class = BookmarkSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Bookmark.objects.filter(
+            user=self.request.user
+        ).select_related('resource').order_by('-created_at')
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+# ---------------------------------------------------
+# RESOURCE TRACKING
+# ---------------------------------------------------
+
+class ResourceTrackingViewSet(viewsets.ModelViewSet):
+    serializer_class = StudentProgressSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return StudentProgress.objects.filter(
+            user=self.request.user
+        ).select_related('resource').order_by('-last_accessed')
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)

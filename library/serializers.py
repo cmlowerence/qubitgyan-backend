@@ -311,7 +311,12 @@ class StudentOptionSerializer(serializers.ModelSerializer):
         model = Option
         fields = ['id', 'text'] 
 
+class StudentQuestionSerializer(serializers.ModelSerializer):
+    options = StudentOptionSerializer(many=True, read_only=True)
 
+    class Meta:
+        model = Question
+        fields = ['id', 'text', 'image_url', 'marks_positive', 'marks_negative', 'order', 'options']
 
 class StudentQuizReadSerializer(serializers.ModelSerializer):
     questions = StudentQuestionSerializer(many=True, read_only=True)

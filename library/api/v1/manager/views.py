@@ -276,3 +276,206 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
         )
 
         return Response(list(categories))
+
+
+# ---------------------------------------------------
+# MANAGER ADMISSION
+# ---------------------------------------------------
+
+class ManagerAdmissionViewSet(viewsets.ModelViewSet):
+    queryset = AdmissionRequest.objects.all().order_by('-created_at')
+    serializer_class = AdmissionRequestSerializer
+    permission_classes = [CanApproveAdmissions]
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        admission = self.get_object()
+
+        if admission.status != 'PENDING':
+            return Response(
+                {"error": "This request has already been processed."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        import secrets
+        import string
+        password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
+
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=admission.email,
+                email=admission.email,
+                password=password,
+                first_name=admission.student_name,
+            )
+            UserProfile.objects.get_or_create(user=user)
+
+            admission.status = 'APPROVED'
+            admission.reviewed_by = request.user
+            admission.review_remarks = request.data.get('remarks', '')
+            admission.save()
+
+            AdminAuditLog.objects.create(
+                admin_user=request.user,
+                action=f"Approved admission for {admission.email}",
+                ip_address=request.META.get('REMOTE_ADDR')
+            )
+
+        subject = "Your QubitGyan Account is Ready!"
+        body = (
+            f"Hello {admission.student_name},\n\n"
+            f"Your account has been approved.\n"
+            f"Username: {admission.email}\n"
+            f"Password: {password}\n\n"
+            f"Please change your password after first login.\n\n"
+            f"— QubitGyan Team"
+        )
+        html_body = f"""
+        <h2>Welcome to QubitGyan!</h2>
+        <p>Hello {admission.student_name},</p>
+        <p>Your account has been approved.</p>
+        <p><strong>Username:</strong> {admission.email}</p>
+        <p><strong>Password:</strong> {password}</p>
+        <p>Please change your password after logging in.</p>
+        """
+        queue_email(admission.email, subject, body, html_body)
+
+        return Response({"status": "Approved", "username": admission.email})
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        admission = self.get_object()
+
+        if admission.status != 'PENDING':
+            return Response(
+                {"error": "This request has already been processed."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        admission.status = 'REJECTED'
+        admission.reviewed_by = request.user
+        admission.review_remarks = request.data.get('remarks', '')
+        admission.save()
+
+        AdminAuditLog.objects.create(
+            admin_user=request.user,
+            action=f"Rejected admission for {admission.email}",
+            ip_address=request.META.get('REMOTE_ADDR')
+        )
+
+        return Response({"status": "Rejected"})
+
+
+# ---------------------------------------------------
+# QUIZ MANAGEMENT
+# ---------------------------------------------------
+
+class QuizManagementViewSet(viewsets.ModelViewSet):
+    queryset = Quiz.objects.select_related('resource').prefetch_related('questions__options').all()
+    serializer_class = QuizSerializer
+    permission_classes = [CanManageContent]
+
+    @action(detail=True, methods=['post'])
+    def add_question(self, request, pk=None):
+        quiz = self.get_object()
+        text = request.data.get('text', '')
+        image_url = request.data.get('image_url')
+        marks_positive = request.data.get('marks_positive', 1)
+        marks_negative = request.data.get('marks_negative', 0)
+        options_data = request.data.get('options', [])
+
+        question = Question.objects.create(
+            quiz=quiz,
+            text=text,
+            image_url=image_url,
+            marks_positive=marks_positive,
+            marks_negative=marks_negative,
+        )
+
+        for opt in options_data:
+            Option.objects.create(
+                question=question,
+                text=opt.get('text', ''),
+                is_correct=opt.get('is_correct', False),
+            )
+
+        return Response({"status": "Question added", "question_id": question.id}, status=status.HTTP_201_CREATED)
+
+
+# ---------------------------------------------------
+# EMAIL MANAGEMENT
+# ---------------------------------------------------
+
+class EmailManagementViewSet(viewsets.ViewSet):
+    permission_classes = [IsSuperAdminOnly]
+
+    def list(self, request):
+        emails = QueuedEmail.objects.all().order_by('-created_at')[:50]
+        data = [
+            {
+                "id": e.id,
+                "recipient": e.recipient_email,
+                "subject": e.subject,
+                "is_sent": e.is_sent,
+                "created_at": e.created_at,
+                "sent_at": e.sent_at,
+                "error_message": e.error_message,
+            }
+            for e in emails
+        ]
+        return Response(data)
+
+    @action(detail=False, methods=['post'])
+    def flush(self, request):
+        unsent = QueuedEmail.objects.filter(is_sent=False)
+        count = unsent.count()
+        for email in unsent:
+            send_queued_email(email)
+        return Response({"status": f"Attempted to send {count} emails."})
+
+
+# ---------------------------------------------------
+# MANAGER COURSE
+# ---------------------------------------------------
+
+class ManagerCourseViewSet(viewsets.ModelViewSet):
+    queryset = Course.objects.all().order_by('-created_at')
+    serializer_class = CourseSerializer
+    permission_classes = [CanManageContent]
+
+
+# ---------------------------------------------------
+# MANAGER NOTIFICATION
+# ---------------------------------------------------
+
+class ManagerNotificationViewSet(viewsets.ModelViewSet):
+    queryset = Notification.objects.all().order_by('-created_at')
+    serializer_class = NotificationSerializer
+    permission_classes = [IsSuperAdminOnly]
+
+    def perform_create(self, serializer):
+        serializer.save(sender=self.request.user)
+
+
+# ---------------------------------------------------
+# SUPER ADMIN RBAC
+# ---------------------------------------------------
+
+class SuperAdminRBACViewSet(viewsets.ModelViewSet):
+    serializer_class = UserSerializer
+    permission_classes = [IsSuperAdminOnly]
+
+    def get_queryset(self):
+        return User.objects.filter(is_staff=True).select_related('profile').order_by('-date_joined')
+
+    @action(detail=True, methods=['post'])
+    def update_permissions(self, request, pk=None):
+        user = self.get_object()
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+
+        profile.can_approve_admissions = request.data.get('can_approve_admissions', profile.can_approve_admissions)
+        profile.can_manage_content = request.data.get('can_manage_content', profile.can_manage_content)
+        profile.can_manage_users = request.data.get('can_manage_users', profile.can_manage_users)
+        profile.save()
+
+        return Response({"status": "Permissions updated"})

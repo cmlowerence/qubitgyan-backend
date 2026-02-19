@@ -11,15 +11,22 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-me-locally-123
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # We check if we are on Render by looking for the RENDER environment variable
+REPLIT = os.environ.get('REPL_ID') is not None
 RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+
 if RENDER_EXTERNAL_HOSTNAME:
     DEBUG = False
+elif REPLIT:
+    DEBUG = True
 else:
-    DEBUG = True # On Pydroid, Debug is ON
+    DEBUG = True
 
-ALLOWED_HOSTS = ['https://qubitgyan-api.onrender.com', 'localhost']
+if DEBUG or REPLIT:
+    ALLOWED_HOSTS = ['*']
+else:
+    ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
+
 if not DEBUG:
-    # Ensure Django knows it's behind Render's HTTPS proxy
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
@@ -27,22 +34,7 @@ if not DEBUG:
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
 
-
-
-if RENDER_EXTERNAL_HOSTNAME:
-    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
-    # If you attach a custom domain later, add it here:
-    # ALLOWED_HOSTS.append('api.qubitgyan.com')
-else:
-    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
-
-
-if RENDER_EXTERNAL_HOSTNAME:
-    # In production, crash immediately if SECRET_KEY is missing
-    SECRET_KEY = os.environ['SECRET_KEY'] 
-else:
-    # In dev, use the fallback
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'localhost-pwd')
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-me-locally-12345')
 
 # Application definition
 
@@ -125,12 +117,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 if not DEBUG:
-    # Tell Django to copy statics to the `staticfiles` directory
-    # in your application directory on Render.
-    STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-    # Turn on WhiteNoise storage backend that takes care of compressing static files
-    # and creating unique names for each version so they can safely be cached forever.
     STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Default primary key field type
@@ -192,20 +180,26 @@ SUPABASE_SR_KEY = os.environ.get('SUPABASE_SR_KEY')
 # REDIS CACHE CONFIGURATION
 # ----------------------------------------
 
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": os.environ.get(
-            "REDIS_URL",
-            "redis://127.0.0.1:6379/1"
-        ),
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
-        "KEY_PREFIX": "qubitgyan",
-        "TIMEOUT": 300,  # default cache timeout
+REDIS_URL = os.environ.get("REDIS_URL")
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            },
+            "KEY_PREFIX": "qubitgyan",
+            "TIMEOUT": 300,
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "qubitgyan-cache",
+        }
+    }
 
 # ---------------------------------------------------
 # LOGGING CONFIGURATION
@@ -234,15 +228,10 @@ LOGGING = {
             "class": "logging.StreamHandler",
             "formatter": "simple",
         },
-        "file": {
-            "class": "logging.FileHandler",
-            "filename": "logs/app.log",
-            "formatter": "verbose",
-        },
     },
 
     "root": {
-        "handlers": ["console", "file"],
+        "handlers": ["console"],
         "level": "INFO",
     },
 }

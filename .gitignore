@@ -13,6 +13,12 @@ staticfiles/
 venv/
 .venv/
 
+# Python
+*.egg-info/
+dist/
+build/
+.pythonlibs/
+
 # IDE/Android
 .idea/
 .vscode/
