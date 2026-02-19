@@ -44,3 +44,68 @@ class IsSuperAdminOnly(permissions.BasePermission):
             and request.user.is_authenticated
             and request.user.is_superuser
         )
+
+def get_user_profile(user):
+    """
+    Cached profile fetch to prevent repeated DB hits.
+    """
+    if not hasattr(user, "_cached_profile"):
+        user._cached_profile, _ = UserProfile.objects.get_or_create(user=user)
+    return user._cached_profile
+    
+class CanManageContent(permissions.BasePermission):
+    """
+    Allows only admins with content control.
+    """
+
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+
+        if request.user.is_superuser:
+            return True
+
+        if request.user.is_staff:
+            profile = get_user_profile(request.user)
+            return profile.can_manage_content
+
+        return False
+
+
+class CanApproveAdmissions(permissions.BasePermission):
+    """
+    Allows only admins who can approve students.
+    """
+
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+
+        if request.user.is_superuser:
+            return True
+
+        if request.user.is_staff:
+            profile = get_user_profile(request.user)
+            return profile.can_approve_admissions
+
+        return False
+        
+class CanManageUsers(permissions.BasePermission):
+    """
+    Allows only admins who can manage users.
+    """
+
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+
+        if request.user.is_superuser:
+            return True
+
+        if request.user.is_staff:
+            profile = get_user_profile(request.user)
+            return profile.can_manage_users
+
+        return False
+        
+        

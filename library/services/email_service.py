@@ -6,8 +6,10 @@ from library.models import QueuedEmail
 
 def queue_email(recipient, subject, body, html_body=None):
     """
-    Saves email to queue and attempts instant dispatch.
+    Saves email to queue WITHOUT sending instantly.
+    Dispatch handled by batch workers.
     """
+
     email = QueuedEmail.objects.create(
         recipient_email=recipient,
         subject=subject,
@@ -15,15 +17,14 @@ def queue_email(recipient, subject, body, html_body=None):
         html_body=html_body,
     )
 
-    send_queued_email(email)
-
     return email
-
-
+    
+    
 def send_queued_email(queued_email: QueuedEmail):
     """
-    Sends a single queued email safely.
+    Sends a single queued email with retry tracking.
     """
+
     try:
         send_mail(
             subject=queued_email.subject,
@@ -42,6 +43,11 @@ def send_queued_email(queued_email: QueuedEmail):
         return True
 
     except Exception as e:
+        queued_email.retry_count += 1
+        queued_email.last_attempt_at = timezone.now()
         queued_email.error_message = str(e)
         queued_email.save()
-        return False
+
+        return False     
+        
+        

@@ -7,9 +7,27 @@ class Command(BaseCommand):
     help = "Dispatch pending queued emails"
 
     def handle(self, *args, **kwargs):
-        pending = QueuedEmail.objects.filter(is_sent=False)
 
+        MAX_RETRIES = 3
+    
+        pending = QueuedEmail.objects.filter(
+            is_sent=False,
+            retry_count__lt=MAX_RETRIES
+        )
+    
+        sent_count = 0
+        failed_count = 0
+    
         for email in pending:
-            send_queued_email(email)
-
-        self.stdout.write(self.style.SUCCESS("Email dispatch completed"))
+            success = send_queued_email(email)
+    
+            if success:
+                sent_count += 1
+            else:
+                failed_count += 1
+    
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Dispatch completed — Sent: {sent_count}, Failed: {failed_count}"
+            )
+        )

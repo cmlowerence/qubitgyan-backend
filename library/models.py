@@ -50,7 +50,11 @@ class KnowledgeNode(models.Model):
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        ordering = ['order', 'name']
+        indexes = [
+            models.Index(fields=['parent']),
+            models.Index(fields=['node_type']),
+            models.Index(fields=['order']),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.get_node_type_display()})"
@@ -78,11 +82,11 @@ class Resource(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['order', 'created_at']
         indexes = [
-            models.Index(fields=["node"]),
-            models.Index(fields=["resource_type"]),
-            models.Index(fields=["created_at"]),
+            models.Index(fields=['node']),
+            models.Index(fields=['resource_type']),
+            models.Index(fields=['order']),
+            models.Index(fields=['created_at'])
         ]
 
     def __str__(self):
@@ -98,7 +102,12 @@ class StudentProgress(models.Model):
     resume_timestamp = models.IntegerField(default=0, help_text="Saved playback time in seconds")
 
     class Meta:
-        unique_together = ('user', 'resource')
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['resource']),
+            models.Index(fields=['user', 'resource']),
+            models.Index(fields=['is_completed']),
+        ]
 
     def __str__(self):
         return f"{self.user.username} - {self.resource.title}"
@@ -182,6 +191,13 @@ class QuizAttempt(models.Model):
     
     total_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     is_completed = models.BooleanField(default=False)
+    class Meta:
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['quiz']),
+            models.Index(fields=['user', 'quiz']),
+            models.Index(fields=['-start_time']),
+        ]
 
 class QuestionResponse(models.Model):
     """Tracks which option a student selected for a specific question."""
@@ -190,7 +206,10 @@ class QuestionResponse(models.Model):
     selected_option = models.ForeignKey(Option, on_delete=models.CASCADE, null=True, blank=True)
     
     class Meta:
-        unique_together = ('attempt', 'question')
+        indexes = [
+            models.Index(fields=['attempt']),
+            models.Index(fields=['question']),
+        ]
 
 class QueuedEmail(models.Model):
     """Stores emails safely in the database to prevent Gmail SMTP limits"""
@@ -203,6 +222,8 @@ class QueuedEmail(models.Model):
     
     created_at = models.DateTimeField(auto_now_add=True)
     sent_at = models.DateTimeField(null=True, blank=True)
+    retry_count = models.PositiveIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['created_at']
@@ -231,7 +252,11 @@ class Enrollment(models.Model):
     enrolled_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ('user', 'course') # Prevents double enrollment
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['course']),
+            models.Index(fields=['user', 'course']),
+        ]
 
 class Notification(models.Model):
     """Global or targeted messages from Admins"""
@@ -244,8 +269,10 @@ class Notification(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-created_at']
-
+        indexes = [
+            models.Index(fields=['target_user']),
+            models.Index(fields=['-created_at']),
+        ]
     def __str__(self):
         return f"Notification: {self.title}"
 
@@ -257,7 +284,11 @@ class UserNotificationStatus(models.Model):
     read_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        unique_together = ('user', 'notification')
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['notification']),
+            models.Index(fields=['user', 'is_read']),
+        ]
 
 class Bookmark(models.Model):
     """Allows students to save specific resources for later"""
@@ -266,9 +297,11 @@ class Bookmark(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ('user', 'resource') # Prevent duplicate bookmarks
-        ordering = ['-created_at']
-
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['resource']),
+            models.Index(fields=['created_at']),
+        ]
     def __str__(self):
         return f"{self.user.username} saved {self.resource.title}"
     

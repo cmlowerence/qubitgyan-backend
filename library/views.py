@@ -11,6 +11,7 @@ from django.contrib.auth.models import User
 from django.db import transaction
 
 from .models import KnowledgeNode, Resource, ProgramContext, StudentProgress, UserProfile
+from django.core.cache import cache
 from .serializers import (
     KnowledgeNodeSerializer, ResourceSerializer, 
     ProgramContextSerializer, UserSerializer, StudentProgressSerializer
@@ -82,22 +83,93 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
     search_fields = ['name']
 
     def get_queryset(self):
-        base_qs = KnowledgeNode.objects.select_related('parent').prefetch_related(
+        """
+        Optimized base queryset with annotations.
+        """
+
+        base_qs = KnowledgeNode.objects.select_related(
+            'parent'
+        ).prefetch_related(
             'children',
             'resources'
         ).annotate(
             resource_count=Count('resources', distinct=True),
             items_count=Count('children', distinct=True),
         ).order_by('order', 'name')
-    
+
         if self.action == 'list':
-            if self.request.query_params.get('all', 'false').lower() == 'true':
+            if self.request.query_params.get(
+                'all', 'false'
+            ).lower() == 'true':
                 return base_qs
-    
+
             return base_qs.filter(parent__isnull=True)
-    
+
         return base_qs
 
+    # ---------------------------------------------------
+    # 🔥 REDIS CACHED LIST ENDPOINT
+    # ---------------------------------------------------
+
+    def list(self, request, *args, **kwargs):
+        """
+        Returns cached knowledge tree payload.
+        """
+
+        is_full = request.query_params.get(
+            'all', 'false'
+        ).lower() == 'true'
+
+        cache_key = (
+            "knowledge_tree_full"
+            if is_full else
+            "knowledge_tree_root"
+        )
+
+        cached_data = cache.get(cache_key)
+
+        if cached_data:
+            return Response(cached_data)
+
+        queryset = self.get_queryset()
+
+        serializer = self.get_serializer(
+            queryset,
+            many=True,
+            context={"request": request}
+        )
+
+        cache.set(cache_key, serializer.data, timeout=300)
+
+        return Response(serializer.data)
+
+    # ---------------------------------------------------
+    # 🔄 CACHE INVALIDATION HOOKS
+    # ---------------------------------------------------
+
+    def perform_create(self, serializer):
+        serializer.save()
+        self.invalidate_tree_cache()
+
+    def perform_update(self, serializer):
+        serializer.save()
+        self.invalidate_tree_cache()
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        self.invalidate_tree_cache()
+
+    # ---------------------------------------------------
+    # CACHE CLEAR HELPER
+    # ---------------------------------------------------
+
+    def invalidate_tree_cache(self):
+        """
+        Clears all tree caches when structure changes.
+        """
+
+        cache.delete("knowledge_tree_root")
+        cache.delete("knowledge_tree_full")
 
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer

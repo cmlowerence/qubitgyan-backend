@@ -72,6 +72,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'library.middleware.request_logging.RequestLoggingMiddleware',
+    'library.middleware.error_logging.ErrorLoggingMiddleware',
 ]
 
 ROOT_URLCONF = 'qubitgyan.urls'
@@ -185,3 +187,62 @@ DEFAULT_FROM_EMAIL = f"QubitGyan Admissions <{EMAIL_HOST_USER}>"
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_SR_KEY = os.environ.get('SUPABASE_SR_KEY')
+
+# ----------------------------------------
+# REDIS CACHE CONFIGURATION
+# ----------------------------------------
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": os.environ.get(
+            "REDIS_URL",
+            "redis://127.0.0.1:6379/1"
+        ),
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        },
+        "KEY_PREFIX": "qubitgyan",
+        "TIMEOUT": 300,  # default cache timeout
+    }
+}
+
+# ---------------------------------------------------
+# LOGGING CONFIGURATION
+# ---------------------------------------------------
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+
+    "formatters": {
+        "verbose": {
+            "format": (
+                "[{asctime}] {levelname} "
+                "{name} {message}"
+            ),
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+        "file": {
+            "class": "logging.FileHandler",
+            "filename": "logs/app.log",
+            "formatter": "verbose",
+        },
+    },
+
+    "root": {
+        "handlers": ["console", "file"],
+        "level": "INFO",
+    },
+}

@@ -29,6 +29,9 @@ from .api.v1.manager.views import (
     ImageManagementViewSet,
 )
 
+from .api.v1.system.views import HealthCheckView
+
+
 router = DefaultRouter()
 
 # --- Core Contract Routes ---
@@ -57,6 +60,7 @@ router.register(r'manager/notifications', ManagerNotificationViewSet, basename='
 router.register(r'manager/rbac', SuperAdminRBACViewSet, basename='manager-rbac')
 router.register(r'manager/media', ImageManagementViewSet, basename='manager-media')
 urlpatterns = [
+    path("health/", HealthCheckView.as_view()),
     path('', include(router.urls)),
     path('dashboard/stats/', DashboardStatsView.as_view(), name='dashboard-stats'),
     path('global-search/', GlobalSearchView.as_view(), name='global-search'),
