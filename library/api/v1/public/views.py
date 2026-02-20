@@ -188,7 +188,7 @@ class StudentQuizAttemptViewSet(viewsets.ReadOnlyModelViewSet):
 # ---------------------------------------------------
 
 class StudentQuizFetchViewSet(
-    mixins.RetrieveModelMixin,
+    mixins.RetrieveModelMixin,mixins.ListModelMixin,
     viewsets.GenericViewSet
 ):
     queryset = Quiz.objects.select_related(

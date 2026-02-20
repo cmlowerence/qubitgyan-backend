@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 import dj_database_url
+from dotenv import load_dotenv
+load_dotenv() # This reads your local .env file!
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -14,13 +16,13 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-me-locally-123
 REPLIT = os.environ.get('REPL_ID') is not None
 RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
 
-if RENDER_EXTERNAL_HOSTNAME:
-    DEBUG = False
-    DEBUG = True
-elif REPLIT:
-    DEBUG = True
+# Set DEBUG to True locally by default, but allow production to turn it off
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+
+if DEBUG:
+    ALLOWED_HOSTS = ['*']
 else:
-    DEBUG = True
+    ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
  
 if DEBUG or REPLIT:
     ALLOWED_HOSTS = ['*']
@@ -35,8 +37,11 @@ if not DEBUG:
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-me-locally-12345')
-
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not DEBUG and not SECRET_KEY:
+    raise ValueError("The SECRET_KEY environment variable must be set in production!")
+elif not SECRET_KEY:
+    SECRET_KEY = 'django-insecure-change-me-locally-12345'
 # Application definition
 
 INSTALLED_APPS = [
@@ -128,6 +133,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # --- QubitGyan Custom Config ---
 
 # CORS Settings (Allow Next.js to talk to us)
+CSRF_TRUSTED_ORIGINS = [
+    "https://qubitgyan.vercel.app",
+    "https://qubitgyan-admin.vercel.app",
+]
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
     "https://qubitgyan.vercel.app",

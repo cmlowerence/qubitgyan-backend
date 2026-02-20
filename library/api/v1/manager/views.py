@@ -5,13 +5,12 @@ from functools import lru_cache
 
 from supabase import create_client, Client
 from rest_framework.parsers import MultiPartParser, FormParser
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db import transaction
 from django.contrib.auth.models import User
-from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
 from django.core.cache import cache
@@ -293,7 +292,8 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
 # MANAGER ADMISSION
 # ---------------------------------------------------
 
-class ManagerAdmissionViewSet(viewsets.ReadOnlyModelViewSet):
+# Changed from ReadOnlyModelViewSet to ModelViewSet to allow updating/editing admissions via PUT/PATCH
+class ManagerAdmissionViewSet(viewsets.ModelViewSet):
     queryset = AdmissionRequest.objects.all().order_by('-created_at')
     serializer_class = AdmissionRequestSerializer
     permission_classes = [CanApproveAdmissions]
@@ -386,6 +386,15 @@ class QuizManagementViewSet(viewsets.ModelViewSet):
     serializer_class = QuizSerializer
     permission_classes = [CanManageContent]
 
+    @action(detail=True, methods=['get'])
+    def questions(self, request, pk=None):
+        """Utility action to fetch all questions (and their options) for a specific quiz"""
+        quiz = self.get_object()
+        # Since we use QuizSerializer which includes nested questions, we can just return the quiz data, 
+        # or isolate the questions list for an easier frontend map.
+        serializer = self.get_serializer(quiz)
+        return Response(serializer.data.get('questions', []))
+
     @action(detail=True, methods=['post'])
     def add_question(self, request, pk=None):
         quiz = self.get_object()
@@ -420,9 +429,9 @@ class QuizManagementViewSet(viewsets.ModelViewSet):
 class EmailManagementViewSet(viewsets.ViewSet):
     permission_classes = [IsSuperAdminOnly]
 
-    def list(self, request):
-        emails = QueuedEmail.objects.all().order_by('-created_at')[:50]
-        data = [
+    def _serialize_emails(self, emails):
+        """Helper to serialize email data consistently across actions"""
+        return [
             {
                 "id": e.id,
                 "recipient": e.recipient_email,
@@ -431,10 +440,90 @@ class EmailManagementViewSet(viewsets.ViewSet):
                 "created_at": e.created_at,
                 "sent_at": e.sent_at,
                 "error_message": e.error_message,
+                "retry_count": getattr(e, 'retry_count', 0)
             }
             for e in emails
         ]
-        return Response(data)
+
+    def list(self, request):
+        """Gets all emails, allows frontend to pass ?limit=100"""
+        limit = int(request.query_params.get('limit', 50))
+        emails = QueuedEmail.objects.all().order_by('-created_at')[:limit]
+        return Response(self._serialize_emails(emails))
+    
+
+    @action(detail=False, methods=['get'])
+    def pending(self, request):
+        """Gets only emails waiting to be sent"""
+        limit = int(request.query_params.get('limit', 50))
+        emails = QueuedEmail.objects.filter(
+            is_sent=False, 
+            error_message__isnull=True
+        ).order_by('-created_at')[:limit]
+        return Response(self._serialize_emails(emails))
+
+    @action(detail=False, methods=['get'])
+    def sent(self, request):
+        """Gets only successfully sent emails"""
+        limit = int(request.query_params.get('limit', 50))
+        emails = QueuedEmail.objects.filter(is_sent=True).order_by('-sent_at')[:limit]
+        return Response(self._serialize_emails(emails))
+
+    @action(detail=False, methods=['get'])
+    def failed(self, request):
+        """Gets emails that failed to send (has an error message)"""
+        limit = int(request.query_params.get('limit', 50))
+        emails = QueuedEmail.objects.filter(
+            is_sent=False
+        ).exclude(
+            Q(error_message__isnull=True) | Q(error_message='')
+        ).order_by('-created_at')[:limit]
+        return Response(self._serialize_emails(emails))
+
+    @action(detail=False, methods=['get'])
+    def queue_status(self, request):
+        """Returns counts of pending/sent/failed emails for dashboard stats"""
+        pending_count = QueuedEmail.objects.filter(
+            is_sent=False, error_message__isnull=True
+        ).count()
+        sent_count = QueuedEmail.objects.filter(is_sent=True).count()
+        failed_count = QueuedEmail.objects.filter(
+            is_sent=False
+        ).exclude(
+            Q(error_message__isnull=True) | Q(error_message='')
+        ).count()
+        pending = {'count': pending_count,
+                   'pending_emails': self.pending(request).data}
+        sent = {'count': sent_count,
+                'sent_emails': self.sent(request).data}
+        failed = {'count': failed_count,
+                  'failed_emails': self.failed(request).data}   
+        return Response({
+            "pending_emails": pending,
+            "sent_emails": sent,
+            "failed_emails": failed
+        })
+    
+    @action(detail=True, methods=['post'])
+    def retry(self, request, pk=None):
+        """Allows an admin to manually retry a single failed email"""
+        try:
+            email = QueuedEmail.objects.get(pk=pk)
+        except QueuedEmail.DoesNotExist:
+            return Response({"error": "Email not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if email.is_sent:
+            return Response({"error": "This email has already been sent successfully."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Assuming send_queued_email handles the try/except and sets is_sent
+        success = send_queued_email(email)
+        if success:
+            return Response({"status": "Email retried and sent successfully!"})
+        else:
+            return Response({
+                "error": "Retry failed", 
+                "message": email.error_message
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def flush(self, request):
@@ -506,3 +595,4 @@ class SuperAdminRBACViewSet(viewsets.ModelViewSet):
             "status": "Permissions updated",
             "user": UserSerializer(user, context={"request": request}).data
         })
+    

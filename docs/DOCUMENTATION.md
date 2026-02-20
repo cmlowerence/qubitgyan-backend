@@ -1,506 +1,209 @@
-# 1. Project Overview
+# 🚀 QubitGyan API Documentation & Integration Guide
 
-*QubitGyan* is a production-ready Learning Management System (LMS) backend built using:
-
-- Django 5
-- Django REST Framework
-- PostgreSQL
-- Redis (Caching Layer)
-- Supabase (Media Storage)
-- JWT Authentication (SimpleJWT)
+Welcome to the comprehensive API documentation for the QubitGyan EdTech platform. This guide serves as the implementation manual for both the **Next.js Student Application** and the **Next.js Admin Dashboard**.
 
 ---
 
-Core Capabilities
+## 🔐 1. Authentication & Base Setup
 
-- Student onboarding & admissions
-- Hierarchical knowledge delivery
-- Course enrollment
-- Quiz & assessment engine
-- Notifications system
-- Gamification tracking
-- Media storage & delivery
-- Admin RBAC control panel
+All API requests (except public endpoints like admissions and health checks) require a JWT Access Token.
 
----
+* **Base API URL:** `https://your-domain.com/api/v1/`
+* **Authorization Header:** `Authorization: Bearer <your_access_token>`
 
-# 2. Project Structure
-
-```
-qubitgyan/
-│
-├── qubitgyan/                # Project configuration
-│   ├── settings.py
-│   ├── urls.py
-│   ├── asgi.py
-│   └── wsgi.py
-│
-├── library/                 # Core LMS application
-│   │
-│   ├── models.py
-│   ├── serializers.py
-│   ├── permissions.py
-│   ├── middleware/
-│   ├── services/
-│   ├── management/
-│   │
-│   ├── api/v1/
-│   │   ├── public/          # Student endpoints
-│   │   ├── manager/         # Admin endpoints
-│   │   └── system/          # Health & monitoring
-│   │
-│   └── views.py             # Knowledge tree + admin core
-│
-└── docs/
-```
----
-
-# 3. Authentication
-
-## Token Obtain
-
-```
-POST /api/token/
-```
-
-### Request
-```
-
-{
-  "username": "student@email.com",
-  "password": "password"
-}
-```
-### Response
-```
-{
-  "access": "JWT_ACCESS_TOKEN",
-  "refresh": "JWT_REFRESH_TOKEN"
-}
-```
-JWT is required in headers:
-```
-Authorization: Bearer <token>
-```
----
-
-# 4. Role-Based Access Control (RBAC)
-
-*Role| Permissions*
-Student| Learning access only
-Admin| Content + operations
-Superadmin| Full system control
-
-### Permission Flags
-
-- "can\_manage\_content"
-- "can\_approve\_admissions"
-- "can\_manage\_users"
+| Method | Endpoint | Description | Payload / Usage | Expected Response (200 OK) |
+| :--- | :--- | :--- | :--- | :--- |
+| **POST** | `/api/token/` | Login & get tokens | `{"username": "...", "password": "..."}` | `{"access": "eyJ...", "refresh": "eyJ..."}` |
+| **POST** | `/api/token/refresh/` | Refresh token | `{"refresh": "eyJ..."}` | `{"access": "new_token..."}` |
 
 ---
 
-# 5. Student Endpoints
+## ⚙️ 2. System Utilities & Globals
+*Endpoints used for system health and global administrative features.*
+
+### Health Check (Public)
+* **GET** `/health/`
+  * **Usage:** Used by hosting providers (Render/Vercel) to verify the server and database are alive.
+  * **Response (200):** `{"status": "healthy", "database": "ok", "cache": "ok"}`
+
+### Global Search (Admin)
+* **GET** `/global-search/?q={query}`
+  * **Usage:** Universal search bar in the Admin Panel. Searches nodes, resources, and users.
+  * **Response (200):** `[{"type": "RESOURCE", "id": 12, "title": "Physics PDF", "url": "/admin/tree/1"}]`
+
+### Admin Dashboard Stats (Admin)
+* **GET** `/dashboard/stats/`
+  * **Usage:** Populates the main charts and metrics on the Admin Dashboard.
+  * **Response (200):** `{"counts": {"nodes": 45, "students": 120}, "charts": {...}, "recent_activity": [...]}`
 
 ---
 
-## 5.1 Admission Request
-```
-POST /api/v1/public/admissions/
-```
-### Request
-```
-{
-  "student_name": "John Doe",
-  "email": "john@email.com"
-}
-```
-### Response
-```
-{
-  "id": 12,
-  "status": "PENDING"
-}
-```
-Spam protected via throttling.
+## 🎓 3. Student Application API (`/public/`)
+*Endpoints designed specifically for the student-facing Next.js frontend.*
 
----
+### Admissions (No Auth Required)
+* **POST** `/public/admissions/`
+  * **Usage:** Student submits an application to join the platform. Triggers an automatic email.
+  * **Payload:** `{"student_name": "Jane", "email": "jane@test.com", "phone": "1234", "class_grade": "10th"}`
+  * **Response (201):** `{"id": 1, "status": "PENDING", ...}`
 
-## 5.2 Fetch Courses
-```
-GET /api/v1/public/courses/
-```
-### Response
-```
-[
-  {
-    "id": 1,
-    "title": "Physics",
-    "is_enrolled_cached": true
-  }
-]
-```
----
+### Profile & Gamification
+* **GET** `/public/my-profile/`
+  * **Usage:** Fetch current student's basic details and avatar.
+* **PUT** `/public/change-password/`
+  * **Payload:** `{"old_password": "...", "new_password": "..."}`
+* **GET** `/public/gamification/`
+  * **Usage:** Dashboard stats for the student.
+  * **Response (200):** `{"current_streak": 5, "longest_streak": 12, "total_learning_minutes": 450}`
 
-## 5.3 Enroll Course
-```
-POST /api/v1/public/courses/{id}/enroll/
-```
-### Response
-```
-{ "status": "Enrolled successfully" }
-```
----
+### Courses & Enrollment
+* **GET** `/public/courses/`
+  * **Usage:** Browse all `is_published=True` courses.
+* **GET** `/public/courses/my_courses/`
+  * **Usage:** Fetch courses the student has actively enrolled in.
+* **POST** `/public/courses/{id}/enroll/`
+  * **Usage:** Add a course to the student's dashboard.
+  * **Response (200):** `{"status": "Enrolled successfully"}`
 
-## 5.4 My Courses
-```
-GET /api/v1/public/courses/my_courses/
-```
----
-
-# 6. Knowledge Tree System
-
-The Knowledge Tree represents the hierarchical structure:
-
-### Domain → Subject → Topic → Subtopic
-
-Each node contains:
-
-- Child nodes
-- Attached resources
-- Resource count
-- Child count
-
----
-
-## Endpoint
-```
-GET /api/v1/tree/
-```
----
-
-## Depth-Based Fetching
-
-Tree payload can be controlled using depth.
-
-### Query Parameter
-```
-?depth=<value>
-```
-### Supported Values
-
-*Depth| Result*
-depth=1| Root nodes only
-depth=2| Root + children
-depth=3| Root + grandchildren
-depth=full| Complete tree
-(none)| Complete tree
-
----
-
-## Examples
-```
-GET /api/v1/tree/?depth=1
-GET /api/v1/tree/?depth=2
-GET /api/v1/tree/?depth=full
-```
----
-
-## Sample Response
-```
-[
-  {
-    "id": 1,
-    "name": "Physics",
-    "resource_count": 12,
-    "items_count": 3,
-    "children": [
-      {
-        "id": 5,
-        "name": "Mechanics",
-        "resource_count": 6,
-        "items_count": 2,
-        "children": []
-      }
-    ]
-  }
-]
-```
----
-
-## Redis Caching Strategy
-
-Each depth level is cached separately.
-
-### *Depth| Cache Key
-1| knowledge\_tree\_depth_1
-2| knowledge\_tree\_depth_2
-full| knowledge\_tree\_depth_full
-
-Cache TTL: *300 seconds*
-
----
-
-### Cache Invalidation
-
-Cache clears automatically when:
-
-- Node created
-- Node updated
-- Node deleted
-
----
-
-### Performance Benefits
-
-Before:
-
-- Full recursive serialization
-- Large payloads
-- Slower rendering
-
-After:
-
-- Controlled payload size
-- Redis caching
-- Reduced DB load
-
----
-
-# 7. Quiz System
-
----
-
-## 7.1 Fetch Quiz
-```
-GET /api/v1/public/quiz/{id}/
-```
-### Response
-```
-{
-  "id": 5,
-  "questions": [
+### Taking Quizzes
+* **GET** `/public/quizzes/{id}/`
+  * **Usage:** Fetch a quiz and its questions. **Note:** The `is_correct` boolean is stripped from the payload to prevent cheating.
+* **POST** `/public/quiz-attempts/submit/`
+  * **Usage:** Submit a completed quiz. The backend calculates the score (handles negative marking).
+  * **Payload:**
+    ```json
     {
-      "id": 10,
-      "text": "Speed of light?",
-      "options": [
-        { "id": 1, "text": "3x10^8" }
+      "quiz_id": 1,
+      "answers": [
+        {"question_id": 10, "option_id": 42},
+        {"question_id": 11, "option_id": 45}
       ]
     }
-  ]
-}
-```
----
+    ```
+  * **Response (200):** `{"id": 5, "total_score": 1.5, "is_completed": true, "responses": [...]}`
+* **GET** `/public/quiz-attempts/`
+  * **Usage:** Fetch past attempt history and scores.
 
-## 7.2 Submit Quiz
-```
-POST /api/v1/public/quiz-attempts/submit/
-```
-### Request
-```
-{
-  "quiz_id": 5,
-  "answers": [
-    { "question_id": 10, "option_id": 1 }
-  ]
-}
-```
-### Response
-```
-{
-  "total_score": 8,
-  "is_completed": true
-}
-```
-Attempt limit: *3*
+### Notifications
+* **GET** `/public/notifications/`
+  * **Usage:** Inbox for the student.
+* **GET** `/public/notifications/unread_count/`
+  * **Usage:** Fast, Redis-cached endpoint for the UI notification bell.
+  * **Response (200):** `{"unread_count": 3}`
+* **POST** `/public/notifications/mark_all_read/`
+  * **Usage:** Clears the unread badge.
+
+### Bookmarks & Resource Tracking
+* **GET / POST / DELETE** `/bookmarks/`
+  * **Payload (POST):** `{"resource": 15}`
+* **GET / POST / PUT** `/progress/`
+  * **Usage:** Track if a student has completed a video, PDF, or exercise.
 
 ---
 
-# 8. Notifications
+## 🏗️ 4. Core Content Builder API (Admin Panel)
+*Endpoints for building the curriculum. Requires `can_manage_content` permission.*
+
+### Program Contexts
+*Tags applied to resources (e.g., "TGT Exam", "PGT Exam", "Foundation").*
+* **GET / POST / PUT / DELETE** `/contexts/`
+  * **Payload (POST):** `{"name": "TGT Crash Course", "description": "Intensive prep."}`
+
+### Knowledge Nodes (The Curriculum Tree)
+*The hierarchical folders (Domain -> Subject -> Section -> Topic).*
+* **GET** `/nodes/?depth=full`
+  * **Usage:** Fetches the entire nested curriculum tree in one optimized, cached query.
+* **POST** `/nodes/`
+  * **Usage:** Create a new node.
+  * **Payload:** `{"name": "Quantum Physics", "node_type": "TOPIC", "parent": 5, "order": 1}`
+* **PUT / DELETE** `/nodes/{id}/`
+
+### Resources (Content Files)
+*The actual files (PDF, Video, Quiz, Exercise) attached to a Knowledge Node.*
+* **GET** `/resources/?node={node_id}&type={PDF|VIDEO|QUIZ}`
+  * **Usage:** Fetch resources inside a specific folder.
+* **POST** `/resources/`
+  * **Payload:** ```json
+    {
+      "title": "Newton's Laws",
+      "resource_type": "PDF",
+      "node": 12,
+      "context_ids": [1, 2],
+      "google_drive_link": "[https://drive.google.com/file/d/1A2B3C](https://drive.google.com/file/d/1A2B3C)..."
+    }
+    ```
+* **POST** `/resources/reorder/`
+  * **Usage:** Save Drag-and-Drop ordering from the frontend.
+  * **Payload:** `{"ids": [15, 12, 18, 14]}`
 
 ---
 
-## Fetch
-```
-GET /api/v1/public/notifications/
-```
-## Mark All Read
-```
-POST /api/v1/public/notifications/mark_all_read/
-```
-## Unread Count
-```
-GET /api/v1/public/notifications/unread_count/
-```
-```
-{ "unread_count": 4 }
-```
-Redis cached.
+## 🛡️ 5. Manager API (Admin Panel)
+*High-level managerial functions. Prefixed with `/manager/`.*
 
----
+### Admissions Processing (`can_approve_admissions`)
+* **GET** `/manager/admissions/`
+  * **Usage:** Review student applications.
+* **POST** `/manager/admissions/{id}/approve/`
+  * **Usage:** Creates the user account, generates a secure password, and queues a welcome email.
+  * **Payload:** `{"remarks": "Verified school ID."}`
+* **POST** `/manager/admissions/{id}/reject/`
 
-# 9. Gamification
-```
-POST /api/v1/public/gamification/ping/
-```
-Tracks:
+### Quiz Creation & Management (`can_manage_content`)
+* **GET / POST / PUT / DELETE** `/manager/quizzes/`
+  * **Payload (POST):** `{"resource": 20, "passing_score_percentage": 60, "time_limit_minutes": 30}`
+* **POST** `/manager/quizzes/{id}/add_question/`
+  * **Usage:** Rapidly build a quiz by sending a question and its options in one payload.
+  * **Payload:**
+    ```json
+    {
+      "text": "What is the capital of France?",
+      "marks_positive": 1.0,
+      "marks_negative": 0.25,
+      "options": [
+        {"text": "Paris", "is_correct": true},
+        {"text": "London", "is_correct": false}
+      ]
+    }
+    ```
 
-- Learning minutes
-- Current streak
-- Longest streak
+### Courses Wrapper (`can_manage_content`)
+* **GET / POST / PUT / DELETE** `/manager/courses/`
+  * **Usage:** Wraps a root Knowledge Node into a sellable/enrollable "Course".
+  * **Payload (POST):** `{"title": "Physics 101", "description": "...", "root_node": 1, "is_published": true}`
 
----
+### Media & Supabase Storage (Superadmin)
+* **POST** `/manager/media/upload/`
+  * **Usage:** Upload an image (Max 5MB). Send as `multipart/form-data`.
+  * **Form Data:** `file` (Binary), `name` (String), `category` (e.g., 'thumbnails').
+  * **Response (201):** `{"public_url": "https://...", "size_kb": 150}`
+* **GET** `/manager/media/library/?category=thumbnails`
+  * **Usage:** Browse uploaded images.
+* **GET** `/manager/media/storage_status/`
+  * **Usage:** See how much of the 1GB limit is used.
+* **DELETE** `/manager/media/{id}/`
+  * **Usage:** Safely deletes from both Supabase and the local database.
 
-# 10. Bookmarks
-```
-GET    /api/v1/public/bookmarks/
-POST   /api/v1/public/bookmarks/
-DELETE /api/v1/public/bookmarks/{id}/
-```
----
+### Role-Based Access Control (Superadmin)
+* **GET** `/manager/rbac/`
+  * **Usage:** List all staff users and their current permissions.
+* **PATCH** `/manager/rbac/{id}/update_permissions/`
+  * **Payload:** ```json
+    {
+      "can_manage_content": true, 
+      "can_approve_admissions": false,
+      "can_manage_users": true
+    }
+    ```
 
-# 11. Resource Progress Tracking
-```
-POST /api/v1/public/resource-tracking/save_timestamp/
-```
----
+### Email Queue System (Superadmin)
+* **GET** `/manager/emails/`
+  * **Usage:** Check the status of the asynchronous email queue (Pending/Sent/Failed).
+* **POST** `/manager/emails/flush/`
+  * **Usage:** Force the system to immediately send all pending emails.
+  * **Response (200):** `{"status": "Attempted to send X emails", "sent": 2, "failed": 0}`
 
-# 12. Admin Endpoints
-
----
-
-## 12.1 Admissions Processing
-```
-PATCH /api/v1/manager/admissions/{id}/process_application/
-```
----
-
-## 12.2 Quiz Builder
-```
-POST /api/v1/manager/quizzes/
-```
-Supports nested payloads.
-
----
-
-## 12.3 Course Management
-```
-/api/v1/manager/courses/
-```
-CRUD enabled.
-
----
-
-## 12.4 Notifications
-```
-/api/v1/manager/notifications/
-```
----
-
-## 12.5 Email Queue
-```
-GET  /queue_status/
-POST /dispatch_batch/
-GET  /pending/
-GET  /sent/
-GET  /failed/
-POST /{id}/retry/
-```
----
-
-# 13. Media Management
-
----
-
-## Upload
-```
-POST /api/v1/manager/media/upload/
-```
-
-## Validation:
-
-- Max 5MB
-- JPEG / PNG / WebP
-
----
-
-## Media Library
-```
-GET /media/library/
-```
-Filters:
-```
-?category=
-?search=
-```
----
-
-## Storage Status
-```
-GET /media/storage_status/
-```
----
-
-# 14. Observability
-
----
-
-## Health Check
-```
-GET /api/v1/system/health/
-```
-```
-{
-  "status": "healthy",
-  "database": "ok",
-  "cache": "ok"
-}
-```
----
-
-# 15. Caching Layer
-
-Redis caches:
-
-- Knowledge tree
-- Notifications
-- Media storage stats
-- Email dispatch locks
-
----
-
-# 16. Database Indexing
-
-Indexes applied on:
-
-- QuizAttempt
-- Enrollment
-- StudentProgress
-- Notification
-- KnowledgeNode
-- Resource
-- Bookmark
-
----
-
-# 17. Email Infrastructure
-
-Queue → Retry → Batch dispatch
-
-Non-blocking SMTP delivery.
-
----
-
-# 18. Deployment Stack
-
-Recommended production stack:
-
-- Gunicorn
-- Nginx
-- Redis
-- PostgreSQL
-- Supabase
-- Whitenoise
-
----
-
-# END OF DOCUMENTATION
+### Push Notifications (`IsSuperAdminOnly`)
+* **GET / POST / DELETE** `/manager/notifications/`
+  * **Usage:** Broadcast a message to all students, or target a specific user.
+  * **Payload (POST):** `{"title": "System Maintenance", "message": "Down for 1 hour.", "target_user": null}` *(Leave `target_user` null for global broadcast).*
