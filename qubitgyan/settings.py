@@ -15,7 +15,8 @@ REPLIT = os.environ.get('REPL_ID') is not None
 RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
 
 if RENDER_EXTERNAL_HOSTNAME:
-    DEBUG = False
+    # DEBUG = False
+    DEBUG = True
 elif REPLIT:
     DEBUG = True
 else:
