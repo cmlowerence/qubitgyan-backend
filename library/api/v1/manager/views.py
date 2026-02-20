@@ -31,7 +31,7 @@ from library.models import (
     QueuedEmail, UploadedImage
 )
 
-from library.serializers import (
+from library.api.v1.manager.serializers import (
     AdmissionRequestSerializer, AdminAdmissionApprovalSerializer,
     QuizSerializer, CourseSerializer, Course,
     NotificationSerializer, Notification,

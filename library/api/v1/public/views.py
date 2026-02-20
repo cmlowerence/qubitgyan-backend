@@ -17,7 +17,7 @@ from library.models import (
     UserProfile, Bookmark, Resource
 )
 
-from library.serializers import (
+from library.api.v1.public.serializers import (
     AdmissionRequestSerializer, QuizAttemptSerializer,
     StudentQuizReadSerializer, CourseSerializer,
     NotificationSerializer, ChangePasswordSerializer,
