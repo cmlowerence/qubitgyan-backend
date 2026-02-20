@@ -31,7 +31,7 @@ from library.models import (
     QueuedEmail, UploadedImage
 )
 
-from library.serializers import (
+from library.api.v1.manager.serializers import (
     AdmissionRequestSerializer, AdminAdmissionApprovalSerializer,
     QuizSerializer, CourseSerializer, Course,
     NotificationSerializer, Notification,
@@ -140,7 +140,13 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        supabase = get_supabase_client()
+        try:
+            supabase = get_supabase_client()
+        except ValueError as exc:
+            return Response(
+                {"error": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
 
         file_bytes = file.read()
         file_ext = file.name.split('.')[-1]
@@ -158,10 +164,15 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
                 {"content-type": file.content_type}
             )
 
-            public_url = (
+            public_url_data = (
                 supabase.storage
                 .from_('media')
                 .get_public_url(file_path)
+            )
+            public_url = (
+                public_url_data.get('publicURL')
+                if isinstance(public_url_data, dict)
+                else public_url_data
             )
 
             UploadedImage.objects.create(
@@ -282,7 +293,7 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
 # MANAGER ADMISSION
 # ---------------------------------------------------
 
-class ManagerAdmissionViewSet(viewsets.ModelViewSet):
+class ManagerAdmissionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AdmissionRequest.objects.all().order_by('-created_at')
     serializer_class = AdmissionRequestSerializer
     permission_classes = [CanApproveAdmissions]
@@ -429,9 +440,20 @@ class EmailManagementViewSet(viewsets.ViewSet):
     def flush(self, request):
         unsent = QueuedEmail.objects.filter(is_sent=False)
         count = unsent.count()
+        sent_count = 0
+        failed_count = 0
+
         for email in unsent:
-            send_queued_email(email)
-        return Response({"status": f"Attempted to send {count} emails."})
+            if send_queued_email(email):
+                sent_count += 1
+            else:
+                failed_count += 1
+
+        return Response({
+            "status": f"Attempted to send {count} emails.",
+            "sent": sent_count,
+            "failed": failed_count,
+        })
 
 
 # ---------------------------------------------------
@@ -460,7 +482,6 @@ class ManagerNotificationViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------
 # SUPER ADMIN RBAC
 # ---------------------------------------------------
-
 class SuperAdminRBACViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsSuperAdminOnly]
@@ -468,14 +489,20 @@ class SuperAdminRBACViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return User.objects.filter(is_staff=True).select_related('profile').order_by('-date_joined')
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post', 'patch'])
     def update_permissions(self, request, pk=None):
         user = self.get_object()
         profile, _ = UserProfile.objects.get_or_create(user=user)
 
-        profile.can_approve_admissions = request.data.get('can_approve_admissions', profile.can_approve_admissions)
-        profile.can_manage_content = request.data.get('can_manage_content', profile.can_manage_content)
-        profile.can_manage_users = request.data.get('can_manage_users', profile.can_manage_users)
-        profile.save()
+        payload = request.data.get('permissions', request.data)
 
-        return Response({"status": "Permissions updated"})
+        profile.can_approve_admissions = payload.get('can_approve_admissions', profile.can_approve_admissions)
+        profile.can_manage_content = payload.get('can_manage_content', profile.can_manage_content)
+        profile.can_manage_users = payload.get('can_manage_users', profile.can_manage_users)
+        profile.save()
+        user.refresh_from_db()
+
+        return Response({
+            "status": "Permissions updated",
+            "user": UserSerializer(user, context={"request": request}).data
+        })

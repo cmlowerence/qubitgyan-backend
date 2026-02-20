@@ -67,6 +67,37 @@ class UserPrivilegeSecurityTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(self.student.is_staff)
 
+
+    def test_superuser_can_update_own_account(self):
+        self.client.force_authenticate(user=self.superuser)
+
+        response = self.client.patch(
+            f'/api/v1/users/{self.superuser.id}/',
+            {'first_name': 'RootUpdated'},
+            format='json',
+        )
+
+        self.superuser.refresh_from_db()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.superuser.first_name, 'RootUpdated')
+
+    def test_superuser_can_update_other_superuser(self):
+        other_superuser = User.objects.create_superuser(
+            username='root2',
+            email='root2@example.com',
+            password='rootpass123',
+        )
+        self.client.force_authenticate(user=self.superuser)
+
+        response = self.client.patch(
+            f'/api/v1/users/{other_superuser.id}/',
+            {'last_name': 'AdminTwo'},
+            format='json',
+        )
+
+        other_superuser.refresh_from_db()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(other_superuser.last_name, 'AdminTwo')
     def test_admin_without_manage_users_cannot_delete_student(self):
         from .models import UserProfile
         profile, _ = UserProfile.objects.get_or_create(user=self.admin)
@@ -255,3 +286,73 @@ class KnowledgeNodeTreeFormatTests(APITestCase):
 
         topic_item = next(item for item in section_item['children'] if item['id'] == topic.id)
         self.assertEqual(topic_item['children'], [])
+
+
+class PublicAdmissionEndpointSecurityTests(APITestCase):
+    def test_public_admissions_disallow_get_and_patch(self):
+        create_resp = self.client.post('/api/v1/public/admissions/', {
+            'student_name': 'A Student',
+            'email': 'student-public@example.com',
+            'phone': '1234567890',
+            'class_grade': '10',
+            'learning_goal': 'Learn fast'
+        }, format='json')
+        self.assertEqual(create_resp.status_code, status.HTTP_201_CREATED)
+
+        list_resp = self.client.get('/api/v1/public/admissions/')
+        self.assertEqual(list_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        patch_resp = self.client.patch('/api/v1/public/admissions/1/', {'student_name': 'Hacked'}, format='json')
+        self.assertEqual(patch_resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ManagerEndpointRobustnessTests(APITestCase):
+    def setUp(self):
+        self.superuser = User.objects.create_superuser(
+            username='rootmanager',
+            email='rootmanager@example.com',
+            password='rootpass123'
+        )
+        self.client.force_authenticate(user=self.superuser)
+
+    def test_media_upload_returns_503_when_supabase_missing(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from unittest.mock import patch
+
+        img = SimpleUploadedFile('x.png', b'pngcontent', content_type='image/png')
+
+        with patch('library.api.v1.manager.views.get_supabase_client', side_effect=ValueError('Supabase configuration missing.')):
+            resp = self.client.post(
+                '/api/v1/manager/media/upload/',
+                {'file': img, 'name': 'x'},
+                format='multipart'
+            )
+
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn('Supabase configuration missing.', str(resp.data))
+
+    def test_email_flush_reports_sent_and_failed_counts(self):
+        from library.models import QueuedEmail
+        from unittest.mock import patch
+
+        first = QueuedEmail.objects.create(
+            recipient_email='a@example.com',
+            subject='s1',
+            body='b1'
+        )
+        second = QueuedEmail.objects.create(
+            recipient_email='b@example.com',
+            subject='s2',
+            body='b2'
+        )
+
+        def fake_send(email):
+            return email.id == first.id
+
+        with patch('library.api.v1.manager.views.send_queued_email', side_effect=fake_send):
+            resp = self.client.post('/api/v1/manager/emails/flush/')
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['sent'], 1)
+        self.assertEqual(resp.data['failed'], 1)
+        self.assertIn('Attempted to send 2 emails', resp.data['status'])
