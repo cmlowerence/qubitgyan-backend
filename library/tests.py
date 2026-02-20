@@ -67,6 +67,37 @@ class UserPrivilegeSecurityTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(self.student.is_staff)
 
+
+    def test_superuser_can_update_own_account(self):
+        self.client.force_authenticate(user=self.superuser)
+
+        response = self.client.patch(
+            f'/api/v1/users/{self.superuser.id}/',
+            {'first_name': 'RootUpdated'},
+            format='json',
+        )
+
+        self.superuser.refresh_from_db()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.superuser.first_name, 'RootUpdated')
+
+    def test_superuser_can_update_other_superuser(self):
+        other_superuser = User.objects.create_superuser(
+            username='root2',
+            email='root2@example.com',
+            password='rootpass123',
+        )
+        self.client.force_authenticate(user=self.superuser)
+
+        response = self.client.patch(
+            f'/api/v1/users/{other_superuser.id}/',
+            {'last_name': 'AdminTwo'},
+            format='json',
+        )
+
+        other_superuser.refresh_from_db()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(other_superuser.last_name, 'AdminTwo')
     def test_admin_without_manage_users_cannot_delete_student(self):
         from .models import UserProfile
         profile, _ = UserProfile.objects.get_or_create(user=self.admin)

@@ -460,7 +460,6 @@ class ManagerNotificationViewSet(viewsets.ModelViewSet):
 # ---------------------------------------------------
 # SUPER ADMIN RBAC
 # ---------------------------------------------------
-
 class SuperAdminRBACViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsSuperAdminOnly]
@@ -468,14 +467,20 @@ class SuperAdminRBACViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return User.objects.filter(is_staff=True).select_related('profile').order_by('-date_joined')
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post', 'patch'])
     def update_permissions(self, request, pk=None):
         user = self.get_object()
         profile, _ = UserProfile.objects.get_or_create(user=user)
 
-        profile.can_approve_admissions = request.data.get('can_approve_admissions', profile.can_approve_admissions)
-        profile.can_manage_content = request.data.get('can_manage_content', profile.can_manage_content)
-        profile.can_manage_users = request.data.get('can_manage_users', profile.can_manage_users)
-        profile.save()
+        payload = request.data.get('permissions', request.data)
 
-        return Response({"status": "Permissions updated"})
+        profile.can_approve_admissions = payload.get('can_approve_admissions', profile.can_approve_admissions)
+        profile.can_manage_content = payload.get('can_manage_content', profile.can_manage_content)
+        profile.can_manage_users = payload.get('can_manage_users', profile.can_manage_users)
+        profile.save()
+        user.refresh_from_db()
+
+        return Response({
+            "status": "Permissions updated",
+            "user": UserSerializer(user, context={"request": request}).data
+        })
