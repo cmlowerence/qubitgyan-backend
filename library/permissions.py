@@ -1,5 +1,7 @@
 from rest_framework import permissions
 
+from library.models import UserProfile
+
 
 class IsAdminOrReadOnly(permissions.BasePermission):
     """
