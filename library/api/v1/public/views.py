@@ -29,12 +29,13 @@ from library.serializers import (
 # PUBLIC ADMISSION
 # ---------------------------------------------------
 
-class PublicAdmissionViewSet(viewsets.ModelViewSet):
-    queryset = AdmissionRequest.objects.all()
+class PublicAdmissionViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+    queryset = AdmissionRequest.objects.none()
     serializer_class = AdmissionRequestSerializer
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'admissions'
+    http_method_names = ['post', 'options', 'head']
 
     def perform_create(self, serializer):
         admission = serializer.save()
@@ -57,11 +58,6 @@ class PublicAdmissionViewSet(viewsets.ModelViewSet):
         """
 
         queue_email(admission.email, subject, body, html_body)
-
-    def get_queryset(self):
-        if self.request.method == 'GET':
-            raise exceptions.MethodNotAllowed("GET")
-        return super().get_queryset()
 
 
 # ---------------------------------------------------

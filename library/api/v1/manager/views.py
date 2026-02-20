@@ -140,7 +140,13 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        supabase = get_supabase_client()
+        try:
+            supabase = get_supabase_client()
+        except ValueError as exc:
+            return Response(
+                {"error": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
 
         file_bytes = file.read()
         file_ext = file.name.split('.')[-1]
@@ -158,10 +164,15 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
                 {"content-type": file.content_type}
             )
 
-            public_url = (
+            public_url_data = (
                 supabase.storage
                 .from_('media')
                 .get_public_url(file_path)
+            )
+            public_url = (
+                public_url_data.get('publicURL')
+                if isinstance(public_url_data, dict)
+                else public_url_data
             )
 
             UploadedImage.objects.create(
@@ -282,7 +293,7 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
 # MANAGER ADMISSION
 # ---------------------------------------------------
 
-class ManagerAdmissionViewSet(viewsets.ModelViewSet):
+class ManagerAdmissionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AdmissionRequest.objects.all().order_by('-created_at')
     serializer_class = AdmissionRequestSerializer
     permission_classes = [CanApproveAdmissions]
@@ -429,9 +440,20 @@ class EmailManagementViewSet(viewsets.ViewSet):
     def flush(self, request):
         unsent = QueuedEmail.objects.filter(is_sent=False)
         count = unsent.count()
+        sent_count = 0
+        failed_count = 0
+
         for email in unsent:
-            send_queued_email(email)
-        return Response({"status": f"Attempted to send {count} emails."})
+            if send_queued_email(email):
+                sent_count += 1
+            else:
+                failed_count += 1
+
+        return Response({
+            "status": f"Attempted to send {count} emails.",
+            "sent": sent_count,
+            "failed": failed_count,
+        })
 
 
 # ---------------------------------------------------
