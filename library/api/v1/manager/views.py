@@ -102,6 +102,59 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
             )
 
     # ---------------------------------------------------
+    # BULK DELETE IMAGES (Multiple Selection)
+    # ---------------------------------------------------
+    @action(detail=False, methods=['post', 'delete'])
+    def bulk_delete(self, request):
+        """
+        Expects a payload like: {"ids": [1, 2, 3]}
+        """
+        ids = request.data.get('ids', [])
+        
+        if not ids or not isinstance(ids, list):
+            return Response(
+                {"error": "Please provide a list of image IDs to delete."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        images = UploadedImage.objects.filter(id__in=ids)
+        
+        if not images.exists():
+            return Response(
+                {"error": "No valid images found for the provided IDs."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Extract all the Supabase file paths into a flat list
+        paths_to_delete = list(images.values_list('supabase_path', flat=True))
+
+        try:
+            supabase = get_supabase_client()
+
+            # Supabase's remove() natively accepts an array of paths!
+            try:
+                supabase.storage.from_('media').remove(paths_to_delete)
+            except Exception:
+                # If Supabase fails (e.g. file already missing), we still want to clean our DB
+                pass
+
+            # Delete from local database
+            deleted_count, _ = images.delete()
+
+            # Invalidate the storage cache so the dashboard chart updates
+            cache.delete("media_storage_status")
+
+            return Response(
+                {"message": f"Successfully deleted {deleted_count} images from storage and database."},
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            return Response(
+                {"error": f"Bulk deletion failed: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    # ---------------------------------------------------
     # UPLOAD IMAGE (Validated + Cached Client)
     # ---------------------------------------------------
 
@@ -182,16 +235,25 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
                 file_size_bytes=file.size,
                 uploaded_by=request.user
             )
-
-            # Invalidate storage cache
+            newImage = UploadedImage.objects.create(
+                name=name,
+                category=category,
+                supabase_path=file_path,
+                public_url=public_url,
+                file_size_bytes=file.size,
+                uploaded_by=request.user    
+            )
             cache.delete("media_storage_status")
 
             return Response(
                 {
+
                     "message": "Upload successful",
+                    "id": newImage.id,
                     "public_url": public_url,
                     "category": category,
-                    "size_kb": round(file.size / 1024, 2)
+                    "size_kb": round(file.size / 1024, 2),
+                    "uploaded_at": newImage.uploaded_at
                 },
                 status=status.HTTP_201_CREATED
             )
@@ -317,7 +379,8 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
                 username=admission.email,
                 email=admission.email,
                 password=password,
-                first_name=admission.student_name,
+                first_name=admission.student_first_name,
+                last_name=admission.student_last_name
             )
             UserProfile.objects.get_or_create(user=user)
 

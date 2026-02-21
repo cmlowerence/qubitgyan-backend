@@ -14,7 +14,9 @@ from library.models import (
     Resource,
     ProgramContext,
     StudentProgress,
-    UserProfile
+    UserProfile,
+    QuizAttempt,
+    Enrollment,
 )
 
 from library.api.v1.core.serializers import (
@@ -22,7 +24,7 @@ from library.api.v1.core.serializers import (
     ResourceSerializer,
     ProgramContextSerializer,
     UserSerializer,
-    StudentProgressSerializer
+    StudentProgressSerializer,
 )
 
 from library.permissions import IsAdminOrReadOnly
@@ -108,22 +110,19 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
             return []
 
         data = []
-
         for node in nodes:
             serialized = KnowledgeNodeSerializer(
                 node,
                 context={"request": self.request}
             ).data
-
+            next_depth = depth - 1 if depth > 0 else -1
             children = node.children.all()
-
-            serialized["children"] = self.build_tree(
-                children,
-                depth - 1 if depth > 0 else -1
-            )
+            if children.exists():
+                serialized["children"] = self.build_tree(children, next_depth)
+            else:
+                serialized["children"] = []
 
             data.append(serialized)
-
         return data
 
     def list(self, request, *args, **kwargs):
@@ -251,6 +250,72 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return super().destroy(request, *args, **kwargs)
 
+    @action(detail=True, methods=["get"], permission_classes=[permissions.IsAdminUser])
+    def detailed_profile(self, request, pk=None):
+        """
+        Provides a comprehensive dashboard view of a specific student for Admins.
+        Aggregates gamification, progress, enrollments, and quiz scores.
+        """
+        user = self.get_object()
+        
+        # Safely fetch the profile. getattr alone can throw an error on OneToOne fields if they don't exist.
+        try:
+            profile = user.profile
+        except Exception:
+            profile = None
+
+        enrollments = Enrollment.objects.filter(user=user).select_related("course")
+        enrolled_courses = [{"id": e.course.id, "title": e.course.title, "enrolled_at": e.enrolled_at} for e in enrollments]
+        
+        progress_qs = StudentProgress.objects.filter(user=user).select_related("resource").order_by("-last_accessed")[:10]
+        recent_progress = [
+            {
+                "id" : p.id,
+                "resource_title": p.resource.title,
+                "resource_type": p.resource.resource_type,
+                "is_completed": p.is_completed,
+                "last_accessed": p.last_accessed,
+                "time_spent_seconds": getattr(p, "time_spent_seconds", 0), # Safe fallback if model not migrated
+            }
+            for p in progress_qs
+        ]
+        
+        # Fixed the start_time attribute (was crashing due to -started_at)
+        quiz_qs = QuizAttempt.objects.filter(user=user).select_related("quiz__resource").order_by("-start_time")[:10]
+        quiz_performances = [
+            {
+                "id": q.id,
+                "quiz_title": q.quiz.resource.title,
+                "score": q.total_score,
+                "max_score": getattr(q, "max_score_possible", None),
+                "is_completed": q.is_completed,
+                "date_taken": q.start_time
+            }
+            for q in quiz_qs
+        ]
+
+        data = {
+            "student_info": {
+                "id": user.id,
+                "name": f"{user.first_name} {user.last_name}".strip() or user.username,
+                "username": user.username, # Added username
+                "email": user.email,       # Fixed email mapping
+                "date_joined": user.date_joined,
+                "is_active": user.is_active,
+            },
+            "gamification": {
+                "avatar_url": profile.avatar_url if profile else None,
+                "current_streak": profile.current_streak if profile else 0,
+                "longest_streak": profile.longest_streak if profile else 0,
+                "total_learning_minutes": profile.total_learning_minutes if profile else 0,
+                "last_active_date": profile.last_active_date if profile else None,
+            },
+            "enrollments": enrolled_courses,
+            "recent_activity": recent_progress,
+            "quiz_performances": quiz_performances # Pluralized to match frontend ts interface
+        }
+        return Response(data)
+
 
 class StudentProgressViewSet(viewsets.ModelViewSet):
     serializer_class = StudentProgressSerializer
@@ -264,7 +329,7 @@ class StudentProgressViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], permission_classes=[permissions.IsAdminUser])
     def all_admin_view(self, request):
-        progress = StudentProgress.objects.all().select_related("user", "resource")
+        progress = StudentProgress.objects.all().select_related("user", "resource", "user__profile")
 
         data = []
 
@@ -272,8 +337,10 @@ class StudentProgressViewSet(viewsets.ModelViewSet):
             data.append({
                 "id": p.id,
                 "user_details": {
+                    "user_id": p.user.id,
+                    "name": f'{p.user.first_name} {p.user.last_name}',
                     "username": p.user.username,
-                    "email": p.user.email
+                    "avatar": p.user_profile.avatar_url if p.user_profile else None,
                 },
                 "resource_details": {
                     "title": p.resource.title,

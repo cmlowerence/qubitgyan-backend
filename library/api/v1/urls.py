@@ -37,7 +37,6 @@ from library.api.v1.system.views import HealthCheckView
 router = DefaultRouter()
 
 # --- Core Contract Routes ---
-router.register(r'nodes', KnowledgeNodeViewSet, basename='node')
 router.register(r'resources', ResourceViewSet, basename='resource')
 router.register(r'contexts', ProgramContextViewSet, basename='context')
 router.register(r'users', UserViewSet, basename='user')
@@ -54,6 +53,7 @@ router.register(r'public/bookmarks', BookmarkViewSet, basename='public-bookmark'
 router.register(r'public/tracking', ResourceTrackingViewSet, basename='public-tracking')
 
 # --- Manager Routes ---
+router.register(r'manager/nodes', KnowledgeNodeViewSet, basename='manager-nodes')
 router.register(r'manager/admissions', ManagerAdmissionViewSet, basename='manager-admission')
 router.register(r'manager/quizzes', QuizManagementViewSet, basename='manager-quiz')
 router.register(r'manager/emails', EmailManagementViewSet, basename='manager-emails')

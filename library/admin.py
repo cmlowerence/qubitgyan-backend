@@ -34,7 +34,8 @@ class UserProfileAdmin(admin.ModelAdmin):
 # --- Admissions & Auditing ---
 @admin.register(AdmissionRequest)
 class AdmissionRequestAdmin(admin.ModelAdmin):
-    list_display = ('student_name', 'email', 'status', 'created_at')
+    list_display = ('student_first_name', 'student_last_name', 'email', 'status', 'created_at')
+    search_fields = ('student_first_name', 'student_last_name', 'email')
     list_filter = ('status',)
 
 admin.site.register(AdminAuditLog)

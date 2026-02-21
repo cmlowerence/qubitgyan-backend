@@ -2,6 +2,7 @@ import re
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from django.db.models import Count
+from django.db import transaction
 from .models import (
     KnowledgeNode, Resource, ProgramContext, 
     StudentProgress, UserProfile, Bookmark, 
@@ -275,7 +276,7 @@ class StudentProgressSerializer(serializers.ModelSerializer):
 class AdmissionRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdmissionRequest
-        fields = ['id', 'student_name', 'email', 'phone', 'class_grade', 'learning_goal', 'status', 'created_at']
+        fields = ['id', 'student_first_name', 'student_last_name', 'email', 'phone', 'class_grade', 'learning_goal', 'status', 'created_at']
         read_only_fields = ['status', 'created_at']
 
 class AdminAdmissionApprovalSerializer(serializers.ModelSerializer):
@@ -285,25 +286,59 @@ class AdminAdmissionApprovalSerializer(serializers.ModelSerializer):
         fields = ['status', 'review_remarks']
 
 class OptionSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False) 
     class Meta:
         model = Option
         fields = ['id', 'text', 'is_correct']
-        # Note: is_correct should be stripped out dynamically for Student views to prevent cheating
 
 class QuestionSerializer(serializers.ModelSerializer):
-    options = OptionSerializer(many=True, read_only=True)
+    id = serializers.IntegerField(required=False)
+    options = OptionSerializer(many=True)
     
     class Meta:
         model = Question
         fields = ['id', 'text', 'image_url', 'marks_positive', 'marks_negative', 'order', 'options']
 
 class QuizSerializer(serializers.ModelSerializer):
-    questions = QuestionSerializer(many=True, read_only=True)
+    questions = QuestionSerializer(many=True)
     resource_title = serializers.ReadOnlyField(source='resource.title')
 
     class Meta:
         model = Quiz
         fields = ['id', 'resource', 'resource_title', 'passing_score_percentage', 'time_limit_minutes', 'questions']
+    
+    @transaction.atomic
+    def create(self, validated_data):
+        question_data = validated_data.pop('questions')
+        quiz = Quiz.objects.create(**validated_data)
+
+        for q_data in question_data:
+            options_data = q_data.pop('options')
+            question = Question.objects.create(quiz=quiz, **q_data)
+
+            for o_data in options_data:
+                Option.objects.create(question=question, **o_data)
+        return quiz
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        questions_data = validated_data.pop('questions', None)
+        
+        instance.passing_score_percentage = validated_data.get('passing_score_percentage', instance.passing_score_percentage)
+        instance.time_limit_minutes = validated_data.get('time_limit_minutes', instance.time_limit_minutes)
+        instance.save()
+
+        if questions_data is not None:
+            instance.questions.all().delete()
+            for q_data in questions_data:
+                q_data.pop('id', None) 
+                options_data = q_data.pop('options')
+                question = Question.objects.create(quiz=instance, **q_data)
+                for o_data in options_data:
+                    o_data.pop('id', None)
+                    Option.objects.create(question=question, **o_data)
+
+        return instance
+
 
 class StudentOptionSerializer(serializers.ModelSerializer):
     """Strips out the 'is_correct' field so students can't cheat"""
@@ -345,18 +380,22 @@ class QuizAttemptSerializer(serializers.ModelSerializer):
         fields = ['id', 'quiz', 'quiz_title', 'start_time', 'end_time', 'total_score', 'is_completed', 'responses']
 
 class CourseSerializer(serializers.ModelSerializer):
-    """Used for browsind available courses"""
+    """Used for both managing and browsing available courses"""
     root_node_name = serializers.ReadOnlyField(source='root_node.name')
     is_enrolled = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
-        fields = ['id', 'title', 'description', 'thumbnail_url', 'is_published', 'root_node_name', 'created_at', 'is_enrolled']
+        fields = [
+            'id', 'title', 'description', 'thumbnail_url', 
+            'is_published', 'root_node', 'root_node_name',
+            'created_at', 'is_enrolled'
+        ]
 
     def get_is_enrolled(self, obj):
-        user = self.context.get('request').user if self.context and 'request' in self.context else None
-        if user and user.is_authenticated:
-            return Enrollment.objects.filter(user=user, course=obj).exists()
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return Enrollment.objects.filter(user=request.user, course=obj).exists()
         return False
 
 class EnrollmentSerializer(serializers.ModelSerializer):

@@ -80,6 +80,9 @@ class Resource(models.Model):
 
     order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+    estimated_time_minutes = models.PositiveIntegerField(default=5, help_text="For gamification and progress tracking")
+    is_active = models.BooleanField(default=True)
+    is_archived = models.BooleanField(default=False, help_text="Hide from students instead of deleting")
 
     class Meta:
         indexes = [
@@ -100,6 +103,7 @@ class StudentProgress(models.Model):
     is_completed = models.BooleanField(default=False)
     last_accessed = models.DateTimeField(auto_now=True)
     resume_timestamp = models.IntegerField(default=0, help_text="Saved playback time in seconds")
+    time_spent_seconds = models.PositiveIntegerField(default=0)
 
     class Meta:
         indexes = [
@@ -111,6 +115,13 @@ class StudentProgress(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.resource.title}"
+    
+    @property
+    def user_profile(self):
+        """Acess to the profile of the student for gamification stats"""
+        if hasattr(self.user, 'profile'):
+            return self.user.profile
+        return None
 
 class AdmissionRequest(models.Model):
     STATUS_CHOICES = (
@@ -119,7 +130,8 @@ class AdmissionRequest(models.Model):
         ('REJECTED', 'Rejected'),
     )
 
-    student_name = models.CharField(max_length=255)
+    student_first_name = models.CharField(max_length=100)
+    student_last_name = models.CharField(max_length=100)
     email = models.EmailField(unique=True)
     phone = models.CharField(max_length=20)
     class_grade = models.CharField(max_length=50)
@@ -135,7 +147,7 @@ class AdmissionRequest(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.student_name} - {self.status}"
+        return f"{self.student_first_name} {self.student_last_name} - {self.status}"
 
 class AdminAuditLog(models.Model):
     """Tracks critical admin actions for security and accountability."""
@@ -177,6 +189,10 @@ class Option(models.Model):
     question = models.ForeignKey(Question, on_delete=models.CASCADE, related_name='options')
     text = models.CharField(max_length=255)
     is_correct = models.BooleanField(default=False)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order', 'id']
 
     def __str__(self):
         return f"{self.text} ({'Correct' if self.is_correct else 'Wrong'})"
@@ -190,6 +206,8 @@ class QuizAttempt(models.Model):
     end_time = models.DateTimeField(null=True, blank=True)
     
     total_score = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    max_score_possible = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+
     is_completed = models.BooleanField(default=False)
     class Meta:
         indexes = [
