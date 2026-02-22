@@ -141,7 +141,8 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
     "https://qubitgyan.vercel.app",
     "https://qubitgyan-admin.vercel.app",
-    "http://localhost:3000", # Keep local for testing
+    "http://localhost:3000", 
+    "http://localhost:3001",
 ]
 
 # REST Framework Config

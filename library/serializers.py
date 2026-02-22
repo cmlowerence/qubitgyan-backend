@@ -276,7 +276,9 @@ class StudentProgressSerializer(serializers.ModelSerializer):
 class AdmissionRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdmissionRequest
-        fields = ['id', 'student_first_name', 'student_last_name', 'email', 'phone', 'class_grade', 'learning_goal', 'status', 'created_at']
+        fields = ['id', 'student_first_name', 'student_last_name', 'email', 'phone', 
+                  'class_grade', 'learning_goal', 'guardian_name', 'guardian_phone', 'preferred_mode', 
+                  'address', 'notes', 'status', 'created_at']
         read_only_fields = ['status', 'created_at']
 
 class AdminAdmissionApprovalSerializer(serializers.ModelSerializer):

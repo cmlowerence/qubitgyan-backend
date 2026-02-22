@@ -44,7 +44,7 @@ class PublicAdmissionViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
         subject = "Application Received — QubitGyan"
 
         body = (
-            f"Hello {admission.student_name},\n\n"
+            f"Hello {admission.student_first_name} {admission.student_last_name},\n\n"
             f"We have received your application.\n"
             f"Our team will review it shortly.\n\n"
             f"You’ll receive login credentials once approved.\n\n"
@@ -53,7 +53,7 @@ class PublicAdmissionViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
 
         html_body = f"""
         <h2>Application Received</h2>
-        <p>Hello {admission.student_name},</p>
+        <p>Hello {admission.student_first_name} {admission.student_last_name},</p>
         <p>Your application has been successfully submitted.</p>
         <p>We’ll notify you once it’s approved.</p>
         """
@@ -246,17 +246,10 @@ class PublicCourseViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def my_courses(self, request):
-        enrollments = Enrollment.objects.filter(
-            user=request.user
-        ).select_related('course')
-
-        courses = [e.course for e in enrollments]
-
-        serializer = self.get_serializer(
-            courses, many=True
-        )
+        courses = self.get_queryset().filter(enrolled_students__user=request.user)
+        
+        serializer = self.get_serializer(courses, many=True)
         return Response(serializer.data)
-
 
 # ---------------------------------------------------
 # NOTIFICATIONS (Redis Cached)

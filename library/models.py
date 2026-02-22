@@ -136,6 +136,11 @@ class AdmissionRequest(models.Model):
     phone = models.CharField(max_length=20)
     class_grade = models.CharField(max_length=50)
     learning_goal = models.TextField(blank=True, null=True)
+    guardian_name = models.CharField(max_length=100, blank=True, null=True)
+    guardian_phone = models.CharField(max_length=20, blank=True, null=True)
+    preferred_mode = models.CharField(max_length=20, default='ONLINE')
+    address = models.TextField(blank=True, null=True)
+    notes = models.TextField(blank=True, null=True, help_text="Additional info from the student or admin")
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     
