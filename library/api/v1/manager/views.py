@@ -14,6 +14,8 @@ from django.contrib.auth.models import User
 from django.conf import settings
 from django.utils import timezone
 from django.core.cache import cache
+import secrets
+import string
 
 from library.permissions import (
     IsSuperAdminOnly,
@@ -354,11 +356,17 @@ class ImageManagementViewSet(viewsets.ModelViewSet):
 # MANAGER ADMISSION
 # ---------------------------------------------------
 
-# Changed from ReadOnlyModelViewSet to ModelViewSet to allow updating/editing admissions via PUT/PATCH
 class ManagerAdmissionViewSet(viewsets.ModelViewSet):
     queryset = AdmissionRequest.objects.all().order_by('-created_at')
     serializer_class = AdmissionRequestSerializer
     permission_classes = [CanApproveAdmissions]
+
+    def generate_meaningful_password(self, first_name):
+        """Generates a password like: Alex@9274"""
+        base_name = first_name.strip().capitalize() if first_name else "Student"
+        base_name = base_name[:10] 
+        random_digits = ''.join(secrets.choice(string.digits) for _ in range(4))
+        return f"{base_name}@{random_digits}"
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
@@ -370,9 +378,8 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        import secrets
-        import string
-        password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(10))
+        remarks = request.data.get('remarks', '').strip()
+        password = self.generate_meaningful_password(admission.student_first_name)
 
         with transaction.atomic():
             user = User.objects.create_user(
@@ -386,7 +393,7 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
 
             admission.status = 'APPROVED'
             admission.reviewed_by = request.user
-            admission.review_remarks = request.data.get('remarks', '')
+            admission.review_remarks = remarks
             admission.save()
 
             AdminAuditLog.objects.create(
@@ -395,23 +402,63 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
                 ip_address=request.META.get('REMOTE_ADDR')
             )
 
-        subject = "Your QubitGyan Account is Ready!"
+        # --- Approval Email Formatting ---
+        subject = "Welcome to QubitGyan! Your Account is Ready"
+        
+        remarks_text = f"\nAdmin Remarks: {remarks}\n" if remarks else ""
         body = (
-            f"Hello {admission.student_name},\n\n"
-            f"Your account has been approved.\n"
+            f"Hello {admission.student_first_name},\n\n"
+            f"Congratulations! Your admission request has been approved.\n"
+            f"{remarks_text}\n"
+            f"Here are your login credentials:\n"
             f"Username: {admission.email}\n"
             f"Password: {password}\n\n"
-            f"Please change your password after first login.\n\n"
-            f"— QubitGyan Team"
+            f"Please log in at https://qubitgyan.vercel.app and change your password immediately.\n\n"
+            f"— The QubitGyan Team"
         )
+
+        remarks_html = f'<div style="margin-top: 20px; padding: 15px; background: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 4px; color: #1e3a8a;"><strong>Note from Admin:</strong> {remarks}</div>' if remarks else ''
+
         html_body = f"""
-        <h2>Welcome to QubitGyan!</h2>
-        <p>Hello {admission.student_name},</p>
-        <p>Your account has been approved.</p>
-        <p><strong>Username:</strong> {admission.email}</p>
-        <p><strong>Password:</strong> {password}</p>
-        <p>Please change your password after logging in.</p>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; line-height: 1.6;">
+            <div style="max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+                <div style="background: #4f46e5; padding: 30px 20px; text-align: center;">
+                    <img src="https://qubitgyan.vercel.app/logo.png" alt="QubitGyan Logo" style="max-height: 50px; filter: brightness(0) invert(1);">
+                </div>
+                <div style="padding: 40px 30px; color: #333333;">
+                    <h2 style="color: #1f2937; margin-top: 0;">Welcome to QubitGyan!</h2>
+                    <p>Dear {admission.student_first_name},</p>
+                    <p>Congratulations! Your admission request has been formally <strong>approved</strong>. We are thrilled to welcome you to our learning community.</p>
+                    
+                    {remarks_html}
+
+                    <p style="margin-top: 25px;">Below are your secure login credentials:</p>
+                    
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 6px; margin: 20px 0; font-family: monospace; font-size: 16px;">
+                        <div style="margin-bottom: 10px;"><span style="color: #64748b;">Username:</span> <strong>{admission.email}</strong></div>
+                        <div><span style="color: #64748b;">Password:</span> <strong>{password}</strong></div>
+                    </div>
+                    
+                    <p style="font-size: 14px; color: #64748b;"><i>For security purposes, please change your password immediately after your first login.</i></p>
+                    
+                    <div style="text-align: center; margin-top: 35px; margin-bottom: 15px;">
+                        <a href="https://qubitgyan.vercel.app/login" style="display: inline-block; padding: 14px 32px; background: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">Login to Your Account</a>
+                    </div>
+                </div>
+                <div style="background: #f9fafb; padding: 20px; text-align: center; font-size: 13px; color: #6b7280; border-top: 1px solid #e5e7eb;">
+                    &copy; 2026 QubitGyan. All rights reserved.<br>
+                    <a href="https://qubitgyan.vercel.app" style="color: #6b7280; text-decoration: none;">qubitgyan.vercel.app</a>
+                </div>
+            </div>
+        </body>
+        </html>
         """
+        
         queue_email(admission.email, subject, body, html_body)
 
         return Response({"status": "Approved", "username": admission.email})
@@ -426,9 +473,11 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        remarks = request.data.get('remarks', '').strip()
+
         admission.status = 'REJECTED'
         admission.reviewed_by = request.user
-        admission.review_remarks = request.data.get('remarks', '')
+        admission.review_remarks = remarks
         admission.save()
 
         AdminAuditLog.objects.create(
@@ -437,8 +486,56 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
             ip_address=request.META.get('REMOTE_ADDR')
         )
 
-        return Response({"status": "Rejected"})
+        # --- Rejection Email Formatting ---
+        subject = "Update regarding your QubitGyan Admission Request"
+        
+        remarks_text = f"\nReason for rejection: {remarks}\n" if remarks else ""
+        body = (
+            f"Hello {admission.student_first_name},\n\n"
+            f"Thank you for your interest in QubitGyan. After careful review, we regret to inform you that we are unable to approve your admission request at this time.\n"
+            f"{remarks_text}\n"
+            f"If you believe this is an error or have any questions, please contact our support team.\n\n"
+            f"— The QubitGyan Team"
+        )
 
+        remarks_html = f'<div style="margin-top: 20px; padding: 15px; background: #fef2f2; border-left: 4px solid #ef4444; border-radius: 4px; color: #991b1b;"><strong>Admin Remarks:</strong> {remarks}</div>' if remarks else ''
+
+        html_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; line-height: 1.6;">
+            <div style="max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+                <div style="background: #1f2937; padding: 30px 20px; text-align: center;">
+                    <img src="https://qubitgyan.vercel.app/logo.png" alt="QubitGyan Logo" style="max-height: 50px; filter: brightness(0) invert(1);">
+                </div>
+                <div style="padding: 40px 30px; color: #333333;">
+                    <h2 style="color: #1f2937; margin-top: 0;">Admission Update</h2>
+                    <p>Dear {admission.student_first_name},</p>
+                    <p>Thank you for your interest in joining QubitGyan. After careful review of your application, we regret to inform you that we are unable to approve your admission request at this time.</p>
+                    
+                    {remarks_html}
+
+                    <p style="margin-top: 25px;">We appreciate the time you took to apply. If you believe this was a mistake, or if you have corrected the issues mentioned above, you are welcome to submit a new application.</p>
+                    
+                    <div style="text-align: center; margin-top: 35px; margin-bottom: 15px;">
+                        <a href="https://qubitgyan.vercel.app/contact" style="display: inline-block; padding: 12px 28px; background: #f3f4f6; color: #4b5563; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; border: 1px solid #d1d5db;">Contact Support</a>
+                    </div>
+                </div>
+                <div style="background: #f9fafb; padding: 20px; text-align: center; font-size: 13px; color: #6b7280; border-top: 1px solid #e5e7eb;">
+                    &copy; 2026 QubitGyan. All rights reserved.<br>
+                    <a href="https://qubitgyan.vercel.app" style="color: #6b7280; text-decoration: none;">qubitgyan.vercel.app</a>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        queue_email(admission.email, subject, body, html_body)
+
+        return Response({"status": "Rejected"})
 
 # ---------------------------------------------------
 # QUIZ MANAGEMENT
