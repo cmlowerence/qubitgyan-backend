@@ -110,23 +110,28 @@ class KnowledgeNodeViewSet(viewsets.ModelViewSet):
             return []
 
         data = []
-        for node in nodes:
-            serialized = KnowledgeNodeSerializer(
-                node,
-                context={"request": self.request}
-            ).data
-            next_depth = depth - 1 if depth > 0 else -1
-            children = node.children.all()
-            if children.exists():
-                serialized["children"] = self.build_tree(children, next_depth)
-            else:
-                serialized["children"] = []
+        # Add annotation here so children also get the count!
+        nodes_with_counts = nodes.annotate(
+            resource_count=Count("resources", distinct=True),
+            items_count=Count("children", distinct=True)
+        )
 
+        for node in nodes_with_counts:
+            serialized = KnowledgeNodeSerializer(node, context={"request": self.request}).data
+            
+            # Recursive step
+            next_depth = depth - 1 if depth > 0 else -1
+            serialized["children"] = self.build_tree(node.children.all(), next_depth)
+            
+            # Fallback if serializer missed it
+            serialized["items_count"] = node.items_count 
+            
             data.append(serialized)
         return data
-
+    
     def list(self, request, *args, **kwargs):
-        depth_param = request.query_params.get("depth", "full")
+        depth_param = request.query_params.get("depth", "1")
+        cache.clear()  
 
         if depth_param == "full":
             depth = -1
