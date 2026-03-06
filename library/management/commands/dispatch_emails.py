@@ -1,3 +1,4 @@
+# qubitgyan-backend\library\management\commands\dispatch_emails.py
 from django.core.management.base import BaseCommand
 from library.models import QueuedEmail
 from library.services.email_service import send_queued_email
