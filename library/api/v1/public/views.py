@@ -7,6 +7,12 @@ from django.utils import timezone
 from django.db.models import Q, Exists, OuterRef, Prefetch
 from datetime import timedelta
 from django.core.cache import cache
+from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes, force_str
+from django.conf import settings
+from rest_framework.permissions import AllowAny
 
 from library.services.email_service import queue_email
 
@@ -23,8 +29,10 @@ from library.api.v1.public.serializers import (
     StudentQuizReadSerializer, CourseSerializer,
     NotificationSerializer, ChangePasswordSerializer,
     MyProfileSerializer, BookmarkSerializer,
-    StudentProgressSerializer
+    StudentProgressSerializer, QuizReviewSerializer,
+    PasswordResetConfirmSerializer, PasswordResetRequestSerializer
 )
+User = get_user_model()
 
 # ---------------------------------------------------
 # PUBLIC ADMISSION
@@ -200,6 +208,25 @@ class StudentQuizFetchViewSet(
 
     serializer_class = StudentQuizReadSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=True, methods=['get'])
+    def review(self, request, pk=None):
+        quiz = self.get_object()
+
+        has_completed = QuizAttempt.objects.filter(
+            user=request.user,
+            quiz=quiz,
+            is_completed=True
+        ).exists()
+
+        if not has_completed:
+            return Response(
+                {"error" : "Nice Try! I must give you that.....But you must complete and submit the quiz befire viewing the correct answers."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        serializer = QuizReviewSerializer(quiz)
+        return Response(serializer.data)
 
 
 # ---------------------------------------------------
@@ -418,4 +445,76 @@ class ResourceTrackingViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+        
+
+class PasswordResetRequestView(generics.GenericAPIView):
+    """Receves email, generates secure token, and sends the recovery link."""
+    serializer_class = PasswordResetRequestSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        user = User.objects.filter(email=email).first()
+        
+        if user:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            
+            token = default_token_generator.make_token(user)
+
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+            reset_link = f"{frontend_url}/reset-password?uid={uid}&token={token}"
+
+            subject = "Reset Your QubitGyan Password"
+            body = (
+                f"Hello {user.first_name or 'Student'},\n\n"
+                f"We received a request to reset your QubitGyan password.\n"
+                f"Click the link below to set a new password:\n\n"
+                f"{reset_link}\n\n"
+                f"If you did not request this, please ignore this email. This link will expire soon."
+            )
+            html_body = f"""
+                <h2>Password Reset Request</h2>
+                <p>Hello {user.first_name or 'Student'},</p>
+                <p>We received a request to reset your QubitGyan password.</p>
+                <a href='{reset_link}' style='display:inline-block; padding:12px 24px; background-color:#4f46e5; color:white; text-decoration:none; border-radius:8px; font-weight:bold;'>Reset Password</a>
+                <p>If you did not request this, please safely ignore this email.</p>
+            """
+
+            queue_email(user.email, subject, body, html_body)
+        return Response(
+            {"detail": "If an account with that email exists, a password reset link has been sent."}, 
+            status=status.HTTP_200_OK
+        )
+    
+class PasswordResetConfirmView(generics.GenericAPIView):
+    """Receives the new password, verifies the token, and saves it."""
+    serializer_class = PasswordResetConfirmSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        uidb64 = serializer.validated_data['uid']
+        token = serializer.validated_data['token']
+        new_password = serializer.validated_data['new_password']
+
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            user = None
+
+        if user is not None and default_token_generator.check_token(user, token):
+            user.set_password(new_password)
+            user.save()
+            return Response({"detail": "Your password has been reset successfully."}, status=status.HTTP_200_OK)
+        else:
+            return Response(
+                {"error": "The reset link is invalid or has expired. Please request a new one."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
         

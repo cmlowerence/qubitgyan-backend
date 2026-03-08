@@ -145,6 +145,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3001",
 ]
 
+FRONTEND_URL = "https://qubitgyan.vercel.app"
+
 # REST Framework Config
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

@@ -74,8 +74,8 @@ class ResourceSerializer(serializers.ModelSerializer):
 
 class ChildNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
-    resource_count = serializers.IntegerField(read_only=True)
-    items_count = serializers.IntegerField(read_only=True)
+    resource_count = serializers.SerializerMethodField(read_only=True)
+    items_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = KnowledgeNode
@@ -92,22 +92,27 @@ class ChildNodeSerializer(serializers.ModelSerializer):
             'items_count',
         ]
 
+    def get_resource_count(self, obj):
+        # len() uses the prefetched data, making it instant (0 DB queries)
+        return len(obj.resources.all())
+
+    def get_items_count(self, obj):
+        return len(obj.children.all())
+
+
     def get_children(self, obj):
         request = self.context.get("request")
-
-        # Default depth = 10 (full tree)
         depth = 10
+
         if request:
             try:
                 depth = int(request.query_params.get("depth", 10))
             except ValueError:
                 depth = 10
 
-        # Stop recursion
         if depth <= 0:
             return []
 
-        # Reduce depth for next level
         self.context["request"].query_params._mutable = True
         self.context["request"].query_params["depth"] = str(depth - 1)
         self.context["request"].query_params._mutable = False
@@ -124,8 +129,8 @@ class ChildNodeSerializer(serializers.ModelSerializer):
 
 class KnowledgeNodeSerializer(serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
-    resource_count = serializers.IntegerField(read_only=True)
-    items_count = serializers.IntegerField(read_only=True)
+    resource_count = serializers.SerializerMethodField(read_only=True)
+    items_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = KnowledgeNode
@@ -141,6 +146,12 @@ class KnowledgeNodeSerializer(serializers.ModelSerializer):
             'resource_count',
             'items_count',
         ]
+
+    def get_resource_count(self, obj):
+        return len(obj.resources.all())
+
+    def get_items_count(self, obj):
+        return len(obj.children.all())
 
     def get_children(self, obj):
         request = self.context.get("request")
@@ -269,9 +280,11 @@ class UserSerializer(serializers.ModelSerializer):
         return instance
 
 class StudentProgressSerializer(serializers.ModelSerializer):
+    resource_title = serializers.ReadOnlyField(source='resource.title')
+    resource_type = serializers.ReadOnlyField(source='resource.resource_type')
     class Meta:
         model = StudentProgress
-        fields = ['id', 'resource', 'is_completed', 'last_accessed']
+        fields = ['id', 'resource', 'resource_title', 'resource_type', 'is_completed', 'last_accessed']
         read_only_fields = ['user']
 
 class AdmissionRequestSerializer(serializers.ModelSerializer):
@@ -358,10 +371,67 @@ class StudentQuestionSerializer(serializers.ModelSerializer):
 
 class StudentQuizReadSerializer(serializers.ModelSerializer):
     questions = StudentQuestionSerializer(many=True, read_only=True)
+    resource_title = serializers.ReadOnlyField(source='resource.title')
+    description = serializers.ReadOnlyField(source='resource.description') # Optional: maps if you have it
+    latest_attempt_id = serializers.SerializerMethodField()
+    is_completed = serializers.SerializerMethodField()
     
     class Meta:
         model = Quiz
-        fields = ['id', 'passing_score_percentage', 'time_limit_minutes', 'questions']
+        fields = [
+            'id', 
+            'resource_title',
+            'description', 
+            'passing_score_percentage', 
+            'time_limit_minutes', 
+            'questions',
+            'latest_attempt_id',
+            'is_completed'
+        ]
+
+    def get_latest_attempt_id(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            # Fetch the most recently completed attempt for this specific user
+            latest_attempt = obj.attempts.filter(
+                user=request.user, 
+                is_completed=True
+            ).order_by('-end_time').first()
+            
+            return latest_attempt.id if latest_attempt else None
+        return None
+
+    def get_is_completed(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            # Check if they have at least one completed attempt
+            return obj.attempts.filter(
+                user=request.user, 
+                is_completed=True
+            ).exists()
+        return False
+
+
+class ReviewOptionSerializer(serializers.ModelSerializer):
+    """Includes the 'is_correct' field for the final review page."""
+    class Meta:
+        model = Option
+        fields = ['id', 'text', 'is_correct']
+
+class ReviewQuestionSerializer(serializers.ModelSerializer):
+    options = ReviewOptionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Question
+        fields = ['id', 'text', 'image_url', 'marks_positive', 'marks_negative', 'order', 'options']
+
+class QuizReviewSerializer(serializers.ModelSerializer):
+    questions = ReviewQuestionSerializer(many=True, read_only=True)
+    resource_title = serializers.ReadOnlyField(source='resource.title')
+
+    class Meta:
+        model = Quiz
+        fields = ['id', 'resource_title', 'passing_score_percentage', 'time_limit_minutes', 'questions']
 
 class QuestionResponseSerializer(serializers.ModelSerializer):
     """Shows the student what they picked and if it was correct"""
@@ -444,11 +514,13 @@ class MyProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
     email = serializers.EmailField(source='user.email', read_only=True)
     first_name = serializers.CharField(source='user.first_name', read_only=True)
+    last_name = serializers.CharField(source='user.last_name', read_only=True)
+    date_joined = serializers.ReadOnlyField(source='user.date_joined')
 
     class Meta:
         model = UserProfile
         fields = [
-            'username', 'email', 'first_name', 'avatar_url', 
+            'username', 'email', 'date_joined', 'first_name', 'last_name', 'avatar_url', 
             'current_streak', 'longest_streak', 'total_learning_minutes', 'last_active_date'
         ]
 
@@ -467,3 +539,12 @@ class UploadedImageSerializer(serializers.ModelSerializer):
         model = UploadedImage
         fields = '__all__'
 
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    

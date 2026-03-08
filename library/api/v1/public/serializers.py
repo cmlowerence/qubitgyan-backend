@@ -9,6 +9,13 @@ from library.serializers import (
     MyProfileSerializer,
     BookmarkSerializer,
     StudentProgressSerializer,
+    KnowledgeNodeSerializer,
+    ChildNodeSerializer,
+    ReviewOptionSerializer,
+    ReviewQuestionSerializer,
+    QuizReviewSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
 )
 
 __all__ = [
@@ -21,4 +28,11 @@ __all__ = [
     'MyProfileSerializer',
     'BookmarkSerializer',
     'StudentProgressSerializer',
+    'KnowledgeNodeSerializer',
+    'ChildNodeSerializer',
+    'ReviewOptionSerializer',
+    'ReviewQuestionSerializer',
+    'QuizReviewSerializer',
+    'PasswordResetConfirmSerializer',
+    'PasswordResetRequestSerializer',
 ]

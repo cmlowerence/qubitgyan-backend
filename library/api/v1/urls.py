@@ -22,6 +22,8 @@ from library.api.v1.public.views import (
     MyProfileView,
     BookmarkViewSet,
     ResourceTrackingViewSet,
+    PasswordResetRequestView,
+    PasswordResetConfirmView,
 )
 from library.api.v1.manager.views import (
     ManagerAdmissionViewSet,
@@ -70,4 +72,6 @@ urlpatterns = [
     path('global-search/', GlobalSearchView.as_view(), name='global-search'),
     path('public/change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('public/my-profile/', MyProfileView.as_view(), name='my-profile'),
+    path('public/password-reset-request/', PasswordResetRequestView.as_view(), name='password_reset_request'),
+    path('public/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
 ]
