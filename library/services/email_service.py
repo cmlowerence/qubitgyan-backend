@@ -1,31 +1,21 @@
-# qubitgyan-backend\library\services\email_service.py
+# qubitgyan-backend/library/services/email_service.py
 from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
 from library.models import QueuedEmail
 
-
 def queue_email(recipient, subject, body, html_body=None):
-    """
-    Saves email to queue WITHOUT sending instantly.
-    Dispatch handled by batch workers.
-    """
-
+    """Saves email to queue so Admin can review and send it manually."""
     email = QueuedEmail.objects.create(
         recipient_email=recipient,
         subject=subject,
         body=body,
         html_body=html_body,
     )
-
     return email
     
-    
 def send_queued_email(queued_email: QueuedEmail):
-    """
-    Sends a single queued email with retry tracking.
-    """
-
+    """Sends the email instantly via Brevo when Admin clicks 'Send'."""
     try:
         send_mail(
             subject=queued_email.subject,
@@ -40,7 +30,6 @@ def send_queued_email(queued_email: QueuedEmail):
         queued_email.sent_at = timezone.now()
         queued_email.error_message = ""
         queued_email.save()
-
         return True
 
     except Exception as e:
@@ -48,7 +37,4 @@ def send_queued_email(queued_email: QueuedEmail):
         queued_email.last_attempt_at = timezone.now()
         queued_email.error_message = str(e)
         queued_email.save()
-
-        return False     
-        
-        
+        return False

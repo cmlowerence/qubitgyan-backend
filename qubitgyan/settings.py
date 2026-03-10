@@ -184,7 +184,7 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = os.environ.get('SMTP_USER')
 EMAIL_HOST_PASSWORD = os.environ.get('SMTP_PASSWORD')
 
-DEFAULT_FROM_EMAIL = f"QubitGyan Admissions <{EMAIL_HOST_USER}>"
+DEFAULT_FROM_EMAIL = f"QubitGyan Admission <{EMAIL_HOST_USER}>"
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_SR_KEY = os.environ.get('SUPABASE_SR_KEY')

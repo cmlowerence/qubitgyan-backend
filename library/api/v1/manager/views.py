@@ -4,6 +4,9 @@ import time
 import uuid
 from functools import lru_cache
 
+
+import threading
+from django.db import close_old_connections
 from supabase import create_client, Client
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db.models import Sum, Q
@@ -25,7 +28,8 @@ from library.permissions import (
     CanManageUsers
 )
 
-from library.services.email_service import queue_email, send_queued_email
+# from library.services.email_service import send_instant_email
+from library.services.email_service import send_queued_email
 
 from library.models import (
     AdmissionRequest, UserProfile, AdminAuditLog,
@@ -460,7 +464,7 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
         </html>
         """
         
-        queue_email(admission.email, subject, body, html_body)
+        send_instant_email(admission.email, subject, body, html_body)
 
         return Response({"status": "Approved", "username": admission.email})
 
@@ -534,7 +538,7 @@ class ManagerAdmissionViewSet(viewsets.ModelViewSet):
         </html>
         """
         
-        queue_email(admission.email, subject, body, html_body)
+        send_instant_email(admission.email, subject, body, html_body)
 
         return Response({"status": "Rejected"})
 
@@ -667,42 +671,49 @@ class EmailManagementViewSet(viewsets.ViewSet):
     
     @action(detail=True, methods=['post'])
     def retry(self, request, pk=None):
-        """Allows an admin to manually retry a single failed email"""
         try:
             email = QueuedEmail.objects.get(pk=pk)
         except QueuedEmail.DoesNotExist:
             return Response({"error": "Email not found"}, status=status.HTTP_404_NOT_FOUND)
 
         if email.is_sent:
-            return Response({"error": "This email has already been sent successfully."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Already sent."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Assuming send_queued_email handles the try/except and sets is_sent
-        success = send_queued_email(email)
-        if success:
-            return Response({"status": "Email retried and sent successfully!"})
-        else:
-            return Response({
-                "error": "Retry failed", 
-                "message": email.error_message
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # Send it in the background
+        def retry_in_background():
+            close_old_connections()
+            send_queued_email(email)
+            close_old_connections()
 
+        thread = threading.Thread(target=retry_in_background)
+        thread.daemon = True
+        thread.start()
+
+        return Response({"status": "Retry initiated in the background!"})
+    
     @action(detail=False, methods=['post'])
     def flush(self, request):
-        unsent = QueuedEmail.objects.filter(is_sent=False)
-        count = unsent.count()
-        sent_count = 0
-        failed_count = 0
+        unsent_count = QueuedEmail.objects.filter(is_sent=False).count()
 
-        for email in unsent:
-            if send_queued_email(email):
-                sent_count += 1
-            else:
-                failed_count += 1
+        if unsent_count == 0:
+            return Response({"status": "No pending emails to send."})
+
+        def process_queue_in_background():
+            close_old_connections() 
+            
+            unsent = QueuedEmail.objects.filter(is_sent=False)
+            for email in unsent:
+                send_queued_email(email)
+                
+            close_old_connections()
+
+        thread = threading.Thread(target=process_queue_in_background)
+        thread.daemon = True 
+        thread.start()
 
         return Response({
-            "status": f"Attempted to send {count} emails.",
-            "sent": sent_count,
-            "failed": failed_count,
+            "status": "Email queue processing started in the background!",
+            "emails_queued": unsent_count
         })
 
 
