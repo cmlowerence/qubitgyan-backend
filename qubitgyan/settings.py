@@ -58,6 +58,13 @@ INSTALLED_APPS = [
     
     # Local Apps
     'library',
+    'library.api.v2.lexicon',
+    'library.api.v2.community',
+    'library.api.v2.analytics',
+    'library.api.v2.notifications',
+    'library.api.v2.assessments',
+    'library.api.v2.planner',
+    'library.api.v2.spaced_repetition',
 ]
 
 MIDDLEWARE = [
@@ -188,6 +195,10 @@ DEFAULT_FROM_EMAIL = f"QubitGyan Admission <{EMAIL_HOST_USER}>"
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_SR_KEY = os.environ.get('SUPABASE_SR_KEY')
+
+
+# Merriam-Webster API Key for Lexicon Fallback
+MERRIAM_WEBSTER_API_KEY = os.environ.get('MERRIAM_WEBSTER_API_KEY', '')
 
 # ----------------------------------------
 # REDIS CACHE CONFIGURATION
