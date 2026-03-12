@@ -5,6 +5,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db import transaction
+from datetime import timedelta
+import random
 from ..models import Word, Pronunciation, Meaning, Thesaurus, DailyPracticeSet, WordOfTheDay
 from ..serializers import WordSerializer, DailyPracticeSetSerializer, WordOfTheDaySerializer
 
@@ -120,19 +122,52 @@ class WordSearchView(APIView):
 
 
 class DailyPracticeSetView(APIView):
+    """
+    Generates a globally shared daily practice deck.
+    Ensures a mix of complex/easy words and prevents 7-day repetition.
+    """
     def get(self, request):
         today = timezone.now().date()
-        practice_set = DailyPracticeSet.objects.filter(date=today).first()
+        
+        practice_set = DailyPracticeSet.objects.prefetch_related(
+            'words__categories', 'words__pronunciations', 
+            'words__meanings', 'words__thesaurus_entries'
+        ).filter(date=today).first()
 
         if not practice_set:
-            words = list(Word.objects.filter(language='en').order_by('?')[:50])
-            if not words:
-                return Response({"error": "Not enough words in database. Please search more words first."}, status=status.HTTP_404_NOT_FOUND)
-            
-            practice_set = DailyPracticeSet.objects.create(date=today)
-            practice_set.words.set(words)
+            with transaction.atomic():
+                recent_dates = [today - timedelta(days=i) for i in range(1, 8)]
+                recent_word_ids = DailyPracticeSet.objects.filter(
+                    date__in=recent_dates
+                ).values_list('words__id', flat=True)
 
-        return Response(DailyPracticeSetSerializer(practice_set).data, status=status.HTTP_200_OK)
+                complex_words = list(Word.objects.filter(
+                    language='en', is_sophisticated=True
+                ).exclude(id__in=recent_word_ids).order_by('?')[:35])
+                
+                normal_words = list(Word.objects.filter(
+                    language='en', is_sophisticated=False
+                ).exclude(id__in=recent_word_ids).order_by('?')[:15])
+                
+                words = complex_words + normal_words
+
+                if len(words) < 50:
+                    shortfall = 50 - len(words)
+                    used_ids = [w.id for w in words]
+                    extra_words = list(Word.objects.filter(language='en')
+                                     .exclude(id__in=used_ids).order_by('?')[:shortfall])
+                    words += extra_words
+
+                if not words:
+                    return Response({"error": "Not enough words in database."}, status=status.HTTP_404_NOT_FOUND)
+                
+                practice_set = DailyPracticeSet.objects.create(date=today)
+                practice_set.words.set(words)
+
+        data = DailyPracticeSetSerializer(practice_set).data
+        random.shuffle(data['words'])
+
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class WordOfTheDayView(APIView):
@@ -157,3 +192,5 @@ class TrendingWordsView(APIView):
     def get(self, request):
         words = Word.objects.filter(search_count__gt=0).order_by('-search_count')[:20]
         return Response(WordSerializer(words, many=True).data, status=status.HTTP_200_OK)
+    
+    
