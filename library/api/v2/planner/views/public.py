@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from library.api.v2.analytics.utils import log_user_activity
 from datetime import timedelta
 import math
 
@@ -135,11 +136,24 @@ class TaskToggleView(APIView):
         else:
             return Response({"error": "Invalid boolean for is_completed"}, status=status.HTTP_400_BAD_REQUEST)
         
+        # --- THE ANTI-FARMING LOCK ---
+        was_already_completed = task.is_completed
+        
         if is_completed:
             task.mark_completed()
+            
+            # --- THE ANALYTICS INTEGRATION ---
+            # Only award XP if the task actually changed from False to True
+            if not was_already_completed:
+                log_user_activity(
+                    request.user, 
+                    tasks_completed=1, 
+                    xp_earned=15
+                )
         else:
             task.is_completed = False
             task.completed_at = None
             task.save(update_fields=['is_completed', 'completed_at'])
 
-        return Response(StudyTaskSerializer(task).data, status=status.HTTP_200_OK)
+        return Response(StudyTaskSerializer(task).data, status=status.HTTP_200_OK)   
+

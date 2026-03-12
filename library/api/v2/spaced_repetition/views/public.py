@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from library.api.v2.analytics.utils import log_user_activity
 
 from ..models import UserWordMastery
 from ..serializers import UserWordMasterySerializer, ReviewLogSerializer
@@ -49,7 +50,7 @@ class SubmitReviewView(APIView):
         grade = serializer.validated_data['grade']
 
         with transaction.atomic():
-            serializer.save(user=request.user)
+            log = serializer.save(user=request.user)
 
             mastery, created = UserWordMastery.objects.get_or_create(
                 user=request.user,
@@ -70,13 +71,11 @@ class SubmitReviewView(APIView):
                 mastery.repetitions = 0
                 mastery.interval = 1
 
-            # Update Easiness Factor (EF)
             new_ef = mastery.easiness_factor + (0.1 - (5 - grade) * (0.08 + (5 - grade) * 0.02))
             mastery.easiness_factor = max(1.3, new_ef)
 
             mastery.next_review_date = timezone.now().date() + timedelta(days=mastery.interval)
             
-            # --- STATUS UPGRADES ---
             if mastery.status == 'NEW':
                 mastery.status = 'LEARNING'
             if mastery.repetitions >= 4 and mastery.status != 'IGNORED':
@@ -85,6 +84,18 @@ class SubmitReviewView(APIView):
                 mastery.status = 'LEARNING'
 
             mastery.save()
+
+            # --- THE ANALYTICS INTEGRATION ---
+            minutes_spent = log.duration_seconds // 60
+            
+            activity_kwargs = {
+                'flashcards_reviewed': 1,
+                'xp_earned': 5
+            }
+            if minutes_spent > 0:
+                activity_kwargs['learning_minutes'] = minutes_spent
+
+            log_user_activity(request.user, **activity_kwargs)
 
         return Response(UserWordMasterySerializer(mastery).data, status=status.HTTP_200_OK)
 

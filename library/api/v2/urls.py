@@ -7,4 +7,5 @@ urlpatterns = [
     path('notifications/', include('library.api.v2.notifications.urls')),
     path('spaced-repetition/', include('library.api.v2.spaced_repetition.urls')),
     path('planner/', include('library.api.v2.planner.urls')),
+    path('analytics/', include('library.api.v2.analytics.urls')),
 ]
