@@ -199,6 +199,9 @@ SUPABASE_SR_KEY = os.environ.get('SUPABASE_SR_KEY')
 
 # Merriam-Webster API Key for Lexicon Fallback
 MERRIAM_WEBSTER_API_KEY = os.environ.get('MERRIAM_WEBSTER_API_KEY', '')
+MW_DICTIONARY_KEY = os.environ.get('MW_DICTIONARY_KEY', '')
+MW_THESAURUS_KEY = os.environ.get('MW_THESAURUS_KEY', '')
+
 
 # ----------------------------------------
 # REDIS CACHE CONFIGURATION
