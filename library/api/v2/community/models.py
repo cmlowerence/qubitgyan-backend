@@ -91,7 +91,7 @@ class Vote(models.Model):
             models.UniqueConstraint(fields=['user', 'comment'], name='unique_user_comment_vote'),
             
             models.CheckConstraint(
-                condition=(
+                check=(
                     models.Q(post__isnull=False, comment__isnull=True) |
                     models.Q(post__isnull=True, comment__isnull=False)
                 ),

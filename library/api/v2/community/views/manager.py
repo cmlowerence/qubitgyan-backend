@@ -5,6 +5,8 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db.models import F, Value
+from django.db.models.functions import Greatest
 
 from ..models import Post, Comment
 
@@ -56,6 +58,12 @@ class CommentModerationView(APIView):
         with transaction.atomic():
             if new_is_accepted and not comment.is_accepted_answer:
                 Comment.objects.filter(post=comment.post, is_accepted_answer=True).update(is_accepted_answer=False)
+
+            if comment.is_deleted != new_is_deleted:
+                count_delta = -1 if new_is_deleted else 1
+                Post.objects.filter(id=comment.post_id).update(
+                    comment_count=Greatest(F('comment_count') + count_delta, Value(0))
+                )
 
             comment.is_deleted = new_is_deleted
             comment.is_accepted_answer = new_is_accepted
