@@ -108,7 +108,12 @@ class VoteActionView(APIView):
     def post(self, request):
         entity_type = request.data.get('type') 
         entity_id = request.data.get('id')
-        vote_value = request.data.get('value') 
+        vote_value = request.data.get('value')
+
+        try:
+            vote_value = int(vote_value)
+        except (TypeError, ValueError):
+            return Response({"error": "Vote value must be 1 or -1."}, status=status.HTTP_400_BAD_REQUEST)
         
         if entity_type not in ['post', 'comment'] or vote_value not in [1, -1]:
             return Response({"error": "Invalid payload."}, status=status.HTTP_400_BAD_REQUEST)
