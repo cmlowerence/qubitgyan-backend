@@ -143,6 +143,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CSRF_TRUSTED_ORIGINS = [
     "https://qubitgyan.vercel.app",
     "https://qubitgyan-admin.vercel.app",
+    "https://lexicon-drab.vercel.app", # <-- ADDED THIS URL
 ]
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
