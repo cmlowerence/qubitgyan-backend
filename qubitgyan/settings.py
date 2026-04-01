@@ -150,6 +150,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://qubitgyan-admin.vercel.app",
     "http://localhost:3000", 
     "http://localhost:3001",
+    "https://lexicon-drab.vercel.app",
 ]
 
 FRONTEND_URL = "https://qubitgyan.vercel.app"
