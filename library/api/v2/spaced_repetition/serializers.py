@@ -1,9 +1,9 @@
 from rest_framework import serializers
 from .models import UserWordMastery, ReviewLog
-from library.api.v2.lexicon.serializers import WordSerializer
+from library.api.v2.lexicon.serializers import WordReadSerializer
 
 class UserWordMasterySerializer(serializers.ModelSerializer):
-    word_details = WordSerializer(source='word', read_only=True)
+    word_details = WordReadSerializer(source='word', read_only=True)
 
     class Meta:
         model = UserWordMastery

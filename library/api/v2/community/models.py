@@ -1,8 +1,11 @@
 # qubitgyan-backend\library\api\v2\community\models.py
+
+
 import uuid
 from django.db import models
 from django.conf import settings
 from library.models import KnowledgeNode
+from django.utils import timezone
 
 class Post(models.Model):
     TYPE_CHOICES = [
@@ -83,7 +86,7 @@ class Vote(models.Model):
     comment = models.ForeignKey(Comment, on_delete=models.CASCADE, null=True, blank=True, related_name='votes')
     
     value = models.SmallIntegerField(choices=VOTE_CHOICES)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True,)
 
     class Meta:
         constraints = [
@@ -91,7 +94,7 @@ class Vote(models.Model):
             models.UniqueConstraint(fields=['user', 'comment'], name='unique_user_comment_vote'),
             
             models.CheckConstraint(
-                check=(
+                condition=(
                     models.Q(post__isnull=False, comment__isnull=True) |
                     models.Q(post__isnull=True, comment__isnull=False)
                 ),
