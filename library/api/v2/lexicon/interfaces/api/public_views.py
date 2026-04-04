@@ -9,11 +9,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ...application.constants import TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
+from ...application.utils.embeddings import search_words_by_similarity
 from ...application.use_cases.generate_daily_set import generate_daily_practice_set
 from ...application.use_cases.generate_wotd import generate_word_of_the_day
 from ...application.use_cases.search_word import fetch_and_store_word
 from ...models import Word
 from ...serializers import DailyPracticeSetReadSerializer, WordOfTheDayReadSerializer, WordReadSerializer
+
+
+CACHE_VERSION = "v3"
+SEMANTIC_CACHE_SECONDS = 900
 
 
 def _prefetched_word_queryset():
@@ -30,11 +35,28 @@ class WordSearchView(APIView):
         raw_word = request.query_params.get("word") or ""
         word_query = raw_word.strip().strip('"').strip("'").lower()
         language = (request.query_params.get("lang") or "en").strip().lower()
+        semantic_requested = str(request.query_params.get("semantic") or "").strip().lower() in {"1", "true", "yes"}
 
         if not word_query:
             return Response({"error": "Word parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        cache_key = f"lexicon:search:{language}:{word_query}"
+        if semantic_requested:
+            cache_key = f"lexicon:{CACHE_VERSION}:semantic:{language}:{word_query}"
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached, status=status.HTTP_200_OK)
+
+            results = search_words_by_similarity(word_query, language=language, limit=20)
+            payload = {
+                "query": word_query,
+                "language": language,
+                "mode": "semantic",
+                "results": WordReadSerializer(results, many=True).data,
+            }
+            cache.set(cache_key, payload, SEMANTIC_CACHE_SECONDS)
+            return Response(payload, status=status.HTTP_200_OK)
+
+        cache_key = f"lexicon:{CACHE_VERSION}:search:{language}:{word_query}"
         cached = cache.get(cache_key)
 
         if cached is not None:
@@ -45,7 +67,11 @@ class WordSearchView(APIView):
 
             return Response(response_data, status=status.HTTP_200_OK)
 
-        word_obj, suggestions = fetch_and_store_word(word_query, language, increment_search_count=True)
+        word_obj, suggestions = fetch_and_store_word(
+            word_query,
+            language,
+            increment_search_count=True,
+        )
 
         if word_obj:
             serialized = WordReadSerializer(word_obj).data
@@ -58,14 +84,20 @@ class WordSearchView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response({"error": "Word not found in any dictionary."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"error": "Word not found in any dictionary."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
 
 class DailyPracticeSetView(APIView):
     def get(self, request):
         try:
             practice_set = generate_daily_practice_set()
-            return Response(DailyPracticeSetReadSerializer(practice_set).data, status=status.HTTP_200_OK)
+            return Response(
+                DailyPracticeSetReadSerializer(practice_set).data,
+                status=status.HTTP_200_OK,
+            )
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
@@ -74,14 +106,17 @@ class WordOfTheDayView(APIView):
     def get(self, request):
         try:
             wotd = generate_word_of_the_day()
-            return Response(WordOfTheDayReadSerializer(wotd).data, status=status.HTTP_200_OK)
+            return Response(
+                WordOfTheDayReadSerializer(wotd).data,
+                status=status.HTTP_200_OK,
+            )
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
 
 class TrendingWordsView(APIView):
     def get(self, request):
-        cache_key = "lexicon:trending:top20"
+        cache_key = f"lexicon:{CACHE_VERSION}:trending:top20"
         cached = cache.get(cache_key)
 
         if cached is not None:
@@ -90,6 +125,7 @@ class TrendingWordsView(APIView):
         words = (
             _prefetched_word_queryset()
             .filter(search_count__gt=0, is_active=True)
+            .only("id", "text", "search_count", "updated_at")
             .order_by("-search_count", "-updated_at")[:20]
         )
 

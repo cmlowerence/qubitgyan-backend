@@ -1,11 +1,16 @@
 
 # qubitgyan-backend/library/api/v2/lexicon/models.py
 
-from django.utils import timezone
 import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
+
+try:
+    from pgvector.django import VectorField  # type: ignore
+except Exception:  # pragma: no cover
+    VectorField = None
 
 
 def _clean_text(value, *, lower: bool = False) -> str:
@@ -71,6 +76,11 @@ class Word(models.Model):
     is_active = models.BooleanField(default=True, db_index=True)
 
     categories = models.ManyToManyField(WordCategory, related_name="words", blank=True)
+
+    if VectorField is not None:
+        embedding = VectorField(dimensions=384, null=True, blank=True)
+    else:
+        embedding = models.JSONField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -253,3 +263,4 @@ class WordUsage(models.Model):
 
     def __str__(self):
         return f"{self.word.text} - {self.usage_type} - {self.used_on}"
+    

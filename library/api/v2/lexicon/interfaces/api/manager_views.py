@@ -44,6 +44,20 @@ def _prefetch_word(word):
     ).get(pk=word.pk)
 
 
+def _schedule_word_embedding_refresh(word_ids):
+    if not word_ids:
+        return
+
+    from ...tasks import refresh_word_embedding
+
+    ids = [str(word_id) for word_id in word_ids]
+    transaction.on_commit(lambda ids=ids: [refresh_word_embedding.delay(word_id) for word_id in ids])
+
+
+def _schedule_single_word_embedding_refresh(word):
+    _schedule_word_embedding_refresh([word.pk])
+
+
 def _parse_limit(value, default=100, maximum=500):
     try:
         limit = int(value)
@@ -87,6 +101,7 @@ class WordListView(APIView):
 class WordManagerView(APIView):
     permission_classes = [IsAuthenticated, IsAdminUser]
 
+    @transaction.atomic
     def get(self, request, pk):
         word = get_object_or_404(
             Word.objects.prefetch_related(
@@ -105,6 +120,7 @@ class WordManagerView(APIView):
         serializer.is_valid(raise_exception=True)
         word = serializer.save(source_api="MANUAL")
         word = _prefetch_word(word)
+        _schedule_single_word_embedding_refresh(word)
         return Response(WordReadSerializer(word).data, status=status.HTTP_201_CREATED)
 
     @transaction.atomic
@@ -114,6 +130,7 @@ class WordManagerView(APIView):
         serializer.is_valid(raise_exception=True)
         word = serializer.save()
         word = _prefetch_word(word)
+        _schedule_single_word_embedding_refresh(word)
         return Response(WordReadSerializer(word).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk):
@@ -143,14 +160,21 @@ class CategoryDetailView(APIView):
     @transaction.atomic
     def patch(self, request, pk):
         category = get_object_or_404(WordCategory, pk=pk)
+        related_word_ids = list(category.words.values_list("id", flat=True))
+
         serializer = WordCategorySerializer(category, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         category = serializer.save()
+
+        _schedule_word_embedding_refresh(related_word_ids)
         return Response(WordCategorySerializer(category).data, status=status.HTTP_200_OK)
 
+    @transaction.atomic
     def delete(self, request, pk):
         category = get_object_or_404(WordCategory, pk=pk)
+        related_word_ids = list(category.words.values_list("id", flat=True))
         category.delete()
+        _schedule_word_embedding_refresh(related_word_ids)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -163,6 +187,7 @@ class AssignWordToCategoryView(APIView):
         category = get_object_or_404(WordCategory, pk=category_id)
         word.categories.add(category)
         word = _prefetch_word(word)
+        _schedule_single_word_embedding_refresh(word)
         return Response(WordReadSerializer(word).data, status=status.HTTP_200_OK)
 
     @transaction.atomic
@@ -171,6 +196,7 @@ class AssignWordToCategoryView(APIView):
         category = get_object_or_404(WordCategory, pk=category_id)
         word.categories.remove(category)
         word = _prefetch_word(word)
+        _schedule_single_word_embedding_refresh(word)
         return Response(WordReadSerializer(word).data, status=status.HTTP_200_OK)
 
 
@@ -215,6 +241,7 @@ class WordSubEntityMixinView(APIView):
             )
 
         word = _prefetch_word(word)
+        _schedule_single_word_embedding_refresh(word)
         return Response(WordReadSerializer(word).data, status=status.HTTP_201_CREATED)
 
     @transaction.atomic
@@ -228,6 +255,7 @@ class WordSubEntityMixinView(APIView):
         obj.delete()
 
         word = _prefetch_word(word)
+        _schedule_single_word_embedding_refresh(word)
         return Response(WordReadSerializer(word).data, status=status.HTTP_200_OK)
 
 
@@ -291,3 +319,5 @@ class ManualDailyPracticeSetView(APIView):
         ).get(pk=practice_set.pk)
 
         return Response(DailyPracticeSetReadSerializer(practice_set).data, status=status.HTTP_200_OK)
+    
+    

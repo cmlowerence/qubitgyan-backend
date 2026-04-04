@@ -1,3 +1,5 @@
+#qubitgyan-backend\qubitgyan\settings.py
+
 import os
 from pathlib import Path
 import dj_database_url
@@ -262,3 +264,14 @@ LOGGING = {
         "level": "INFO",
     },
 }
+
+# Celery Configuration
+
+CELERY_BROKER_URL = REDIS_URL or os.environ.get("CELERY_BROKER_URL", "")
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND") or (REDIS_URL or "cache+memory://")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_ALWAYS_EAGER = DEBUG and not REDIS_URL
+CELERY_TASK_EAGER_PROPAGATES = True

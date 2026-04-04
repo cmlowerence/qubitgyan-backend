@@ -144,7 +144,7 @@ class WordWriteSerializer(serializers.ModelSerializer):
     def validate_language(self, value):
         value = (value or "").strip().lower() or "en"
         return value
-
+    
     def _persist_relations(self, word, categories=None, meanings=None, pronunciations=None, thesaurus_entries=None):
         if categories is not None:
             word.categories.set(categories)
