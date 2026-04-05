@@ -149,6 +149,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",                
     "http://localhost:3001",               
     "http://localhost:5173",                
+    "https://lexicon-drab.vercel.app", # <-- ADDED THIS URL
 ]
 
 CORS_ALLOW_ALL_ORIGINS = False
@@ -159,6 +160,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000", 
     "http://localhost:3001",
     "http://localhost:5173",
+    "https://lexicon-drab.vercel.app",
 ]
 FRONTEND_URL = "https://qubitgyan.vercel.app"
 
