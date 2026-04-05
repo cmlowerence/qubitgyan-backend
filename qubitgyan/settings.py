@@ -145,7 +145,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CSRF_TRUSTED_ORIGINS = [
     "https://qubitgyan.vercel.app",
     "https://qubitgyan-admin.vercel.app",
-    "https://lexicon_qubitgyan.vercel.app", 
+    "https://lexicon-qubitgyan.vercel.app", 
     "http://localhost:3000",                
     "http://localhost:3001",               
     "http://localhost:5173",                
@@ -156,7 +156,7 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
     "https://qubitgyan.vercel.app",
     "https://qubitgyan-admin.vercel.app",
-    "https://lexicon_qubitgyan.vercel.app",
+    "https://lexicon-qubitgyan.vercel.app",
     "http://localhost:3000", 
     "http://localhost:3001",
     "http://localhost:5173",
