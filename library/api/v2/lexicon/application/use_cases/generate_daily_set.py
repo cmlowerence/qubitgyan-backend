@@ -9,10 +9,8 @@ from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from ...application.constants import DEFAULT_PRACTICE_COUNT, PRACTICE_BLACKLIST_DAYS, SEED_WORDS
-from ...application.utils import normalize_text
+from ...application.constants import DEFAULT_PRACTICE_COUNT, PRACTICE_BLACKLIST_DAYS
 from ...models import DailyPracticeSet, Word, WordUsage
-from .search_word import fetch_and_store_word
 
 logger = logging.getLogger(__name__)
 
@@ -52,38 +50,6 @@ def _recent_blacklist_ids(today, days: int):
     )
 
 
-def _unique_words(words):
-    return list({word.pk: word for word in words}.values())
-
-
-def _top_up_with_seed_words(available_words, blacklist_ids, target_count, rng):
-    existing_texts = {
-        normalize_text(text)
-        for text in Word.objects.filter(language="en", is_active=True).values_list("text", flat=True)[:5000]
-    }
-
-    candidate_seeds = [
-        normalize_text(word)
-        for word in SEED_WORDS
-        if normalize_text(word) not in existing_texts
-    ]
-
-    rng.shuffle(candidate_seeds)
-
-    selected = {word.pk: word for word in available_words}
-
-    for seed in candidate_seeds:
-        if len(selected) >= target_count:
-            break
-
-        new_word, _ = fetch_and_store_word(seed, "en", increment_search_count=False)
-
-        if new_word and new_word.pk not in blacklist_ids:
-            selected[new_word.pk] = new_word
-
-    return list(selected.values())
-
-
 def _prefetched_practice_set_queryset():
     return DailyPracticeSet.objects.prefetch_related(
         "words__categories",
@@ -120,17 +86,6 @@ def generate_daily_practice_set(date=None, count: int = DEFAULT_PRACTICE_COUNT):
             .exclude(id__in=blacklist_ids)
             .only("id", "text", "difficulty_score", "embedding")
         )
-
-        if len(available_words) < count:
-            available_words = _top_up_with_seed_words(available_words, blacklist_ids, count, rng)
-
-        if len(available_words) < count:
-            fallback_pool = list(
-                Word.objects.filter(language="en", is_active=True)
-                .exclude(id__in=blacklist_ids)
-                .only("id", "text", "embedding")
-            )
-            available_words = _unique_words([*available_words, *fallback_pool])
 
         if len(available_words) < count:
             raise ValueError("Not enough words available to generate a practice set.")

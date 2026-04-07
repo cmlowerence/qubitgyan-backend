@@ -4,13 +4,14 @@ from copy import deepcopy
 
 from django.core.cache import cache
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ...application.constants import TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
 from ...application.utils.embeddings import search_words_by_similarity
-from ...application.use_cases.generate_daily_set import generate_daily_practice_set
+from ...application.use_cases.generate_daily_set import _existing_practice_set, generate_daily_practice_set
 from ...application.use_cases.generate_wotd import generate_word_of_the_day
 from ...application.use_cases.search_word import fetch_and_store_word
 from ...models import Word
@@ -93,6 +94,13 @@ class WordSearchView(APIView):
 class DailyPracticeSetView(APIView):
     def get(self, request):
         try:
+            existing = _existing_practice_set(timezone.localdate())
+            if existing:
+                return Response(
+                    DailyPracticeSetReadSerializer(existing).data,
+                    status=status.HTTP_200_OK,
+                )
+
             practice_set = generate_daily_practice_set()
             return Response(
                 DailyPracticeSetReadSerializer(practice_set).data,
