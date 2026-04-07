@@ -6,6 +6,13 @@ import dj_database_url
 from dotenv import load_dotenv
 load_dotenv() # This reads your local .env file!
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -283,3 +290,4 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = DEBUG and not REDIS_URL
 CELERY_TASK_EAGER_PROPAGATES = True
+ENABLE_ASYNC_TASKS = _env_bool("ENABLE_ASYNC_TASKS", default=bool(CELERY_BROKER_URL))

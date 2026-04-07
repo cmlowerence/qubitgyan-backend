@@ -3,6 +3,7 @@
 import logging
 from typing import Iterable
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
@@ -30,15 +31,44 @@ def _prefetched_word(word: Word) -> Word:
 
 
 def _queue_enrichment(word_id, language: str):
+    if not settings.ENABLE_ASYNC_TASKS:
+        logger.warning("Skipping enrich_word_record task dispatch because async tasks are disabled.")
+        return
+
     from ...tasks import enrich_word_record
 
-    transaction.on_commit(lambda: enrich_word_record.delay(str(word_id), language))
+    def _dispatch():
+        try:
+            enrich_word_record.delay(str(word_id), language)
+        except Exception as exc:
+            logger.warning(
+                "Failed to dispatch enrich_word_record task for word_id=%s language=%s: %s",
+                word_id,
+                language,
+                exc,
+            )
+
+    transaction.on_commit(_dispatch)
 
 
 def _queue_embedding_refresh(word_id):
+    if not settings.ENABLE_ASYNC_TASKS:
+        logger.warning("Skipping refresh_word_embedding task dispatch because async tasks are disabled.")
+        return
+
     from ...tasks import refresh_word_embedding
 
-    transaction.on_commit(lambda: refresh_word_embedding.delay(str(word_id)))
+    def _dispatch():
+        try:
+            refresh_word_embedding.delay(str(word_id))
+        except Exception as exc:
+            logger.warning(
+                "Failed to dispatch refresh_word_embedding task for word_id=%s: %s",
+                word_id,
+                exc,
+            )
+
+    transaction.on_commit(_dispatch)
 
 
 def _should_enrich(word: Word) -> bool:
@@ -320,4 +350,3 @@ def fetch_and_store_word(word_query: str, language: str = "en", increment_search
     _queue_embedding_refresh(word.pk)
 
     return _prefetched_word(word), []
-

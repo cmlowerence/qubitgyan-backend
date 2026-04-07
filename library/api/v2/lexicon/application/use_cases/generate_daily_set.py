@@ -5,6 +5,7 @@ import random
 import uuid
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -35,10 +36,26 @@ def _queue_embedding_refresh(word_ids):
     if not word_ids:
         return
 
+    if not settings.ENABLE_ASYNC_TASKS:
+        logger.warning("Skipping embedding refresh task dispatch because async tasks are disabled.")
+        return
+
     from ...tasks import refresh_word_embedding
 
     ids = [str(word_id) for word_id in word_ids]
-    transaction.on_commit(lambda ids=ids: [refresh_word_embedding.delay(word_id) for word_id in ids])
+
+    def _dispatch(ids_to_dispatch):
+        for word_id in ids_to_dispatch:
+            try:
+                refresh_word_embedding.delay(word_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to dispatch refresh_word_embedding task for word_id=%s: %s",
+                    word_id,
+                    exc,
+                )
+
+    transaction.on_commit(lambda ids=ids: _dispatch(ids))
 
 
 def _recent_blacklist_ids(today, days: int):
