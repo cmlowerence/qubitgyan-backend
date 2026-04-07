@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 
 from ...application.constants import TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
 from ...application.utils.embeddings import search_words_by_similarity
-from ...application.use_cases.generate_daily_set import _existing_practice_set, generate_daily_practice_set
+from ...application.use_cases.generate_daily_set import _existing_practice_set
 from ...application.use_cases.generate_wotd import generate_word_of_the_day
 from ...application.use_cases.search_word import fetch_and_store_word
 from ...models import Word
@@ -93,21 +93,17 @@ class WordSearchView(APIView):
 
 class DailyPracticeSetView(APIView):
     def get(self, request):
-        try:
-            existing = _existing_practice_set(timezone.localdate())
-            if existing:
-                return Response(
-                    DailyPracticeSetReadSerializer(existing).data,
-                    status=status.HTTP_200_OK,
-                )
-
-            practice_set = generate_daily_practice_set()
+        existing = _existing_practice_set(timezone.localdate())
+        if not existing:
             return Response(
-                DailyPracticeSetReadSerializer(practice_set).data,
-                status=status.HTTP_200_OK,
+                {"error": "Today's practice set is not ready yet. Please try again shortly."},
+                status=status.HTTP_404_NOT_FOUND,
             )
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            DailyPracticeSetReadSerializer(existing).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class WordOfTheDayView(APIView):

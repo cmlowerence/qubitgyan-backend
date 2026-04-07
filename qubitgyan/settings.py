@@ -195,6 +195,7 @@ REST_FRAMEWORK = {
 
 
 from datetime import timedelta
+from celery.schedules import crontab
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1), # User stays logged in for 1 day
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
@@ -291,3 +292,16 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = DEBUG and not REDIS_URL
 CELERY_TASK_EAGER_PROPAGATES = True
 ENABLE_ASYNC_TASKS = _env_bool("ENABLE_ASYNC_TASKS", default=bool(CELERY_BROKER_URL))
+
+
+DAILY_PRACTICE_PREGEN_HOUR_UTC = int(os.environ.get("DAILY_PRACTICE_PREGEN_HOUR_UTC", "9"))
+DAILY_PRACTICE_PREGEN_MINUTE_UTC = int(os.environ.get("DAILY_PRACTICE_PREGEN_MINUTE_UTC", "0"))
+DAILY_PRACTICE_SEED_TOP_UP = _env_bool("DAILY_PRACTICE_SEED_TOP_UP", default=True)
+
+CELERY_BEAT_SCHEDULE = {
+    "lexicon-generate-daily-practice-set": {
+        "task": "library.api.v2.lexicon.tasks.generate_daily_practice_set_job",
+        "schedule": crontab(minute=DAILY_PRACTICE_PREGEN_MINUTE_UTC, hour=DAILY_PRACTICE_PREGEN_HOUR_UTC),
+        "kwargs": {"seed_top_up": DAILY_PRACTICE_SEED_TOP_UP},
+    },
+}

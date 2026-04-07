@@ -48,3 +48,11 @@ def enrich_word_record(self, word_id: str, language: str = "en"):
     enriched = enrich_existing_word_from_remote(word, language)
     refresh_word_embedding.delay(str(word.pk))
     return str(word.pk) if enriched else str(word.pk)
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
+def generate_daily_practice_set_job(self, seed_top_up: bool = True):
+    """Background daily job to pre-generate today's practice set before traffic peaks."""
+    from .application.use_cases.generate_daily_set import generate_daily_practice_set
+
+    practice_set = generate_daily_practice_set(seed_top_up=seed_top_up)
+    return str(practice_set.pk) if practice_set else None
