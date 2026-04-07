@@ -10,7 +10,7 @@ from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from ...application.constants import DEFAULT_PRACTICE_COUNT, PRACTICE_BLACKLIST_DAYS
+from ...application.constants import DEFAULT_PRACTICE_COUNT, PRACTICE_BLACKLIST_DAYS, SEED_WORDS
 from ...models import DailyPracticeSet, Word, WordUsage
 
 logger = logging.getLogger(__name__)
@@ -80,8 +80,38 @@ def _existing_practice_set(today):
     return _prefetched_practice_set_queryset().filter(date=today).first()
 
 
+def _active_word_count(language: str = "en") -> int:
+    return Word.objects.filter(language=language, is_active=True).count()
+
+
+def _top_up_seed_words(minimum_count: int, language: str = "en"):
+    """
+    Populate local lexicon inventory using configured seed words.
+
+    This function is intended for background jobs only and may perform
+    remote API lookups through fetch_and_store_word.
+    """
+    if _active_word_count(language=language) >= minimum_count:
+        return
+
+    from .search_word import fetch_and_store_word
+
+    for seed in SEED_WORDS:
+        if _active_word_count(language=language) >= minimum_count:
+            break
+
+        try:
+            fetch_and_store_word(seed, language=language, increment_search_count=False)
+        except Exception as exc:
+            logger.warning("Seed top-up failed for word=%s language=%s: %s", seed, language, exc)
+
+
 @transaction.atomic
-def generate_daily_practice_set(date=None, count: int = DEFAULT_PRACTICE_COUNT):
+def generate_daily_practice_set(
+    date=None,
+    count: int = DEFAULT_PRACTICE_COUNT,
+    seed_top_up: bool = False,
+):
     today = date or timezone.localdate()
     rng = random.Random(str(today))
 
@@ -95,6 +125,9 @@ def generate_daily_practice_set(date=None, count: int = DEFAULT_PRACTICE_COUNT):
         existing = _existing_practice_set(today)
         if existing:
             return existing
+
+        if seed_top_up:
+            _top_up_seed_words(minimum_count=count)
 
         blacklist_ids = set(_recent_blacklist_ids(today, PRACTICE_BLACKLIST_DAYS))
 
