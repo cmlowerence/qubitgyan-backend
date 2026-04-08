@@ -67,6 +67,14 @@ def _recent_blacklist_ids(today, days: int):
     )
 
 
+def _previously_used_ids(usage_type: str):
+    return set(
+        WordUsage.objects.filter(usage_type=usage_type)
+        .values_list("word_id", flat=True)
+        .distinct()
+    )
+
+
 def _prefetched_practice_set_queryset():
     return DailyPracticeSet.objects.prefetch_related(
         "words__categories",
@@ -130,17 +138,33 @@ def generate_daily_practice_set(
             _top_up_seed_words(minimum_count=count)
 
         blacklist_ids = set(_recent_blacklist_ids(today, PRACTICE_BLACKLIST_DAYS))
+        previously_used_ids = _previously_used_ids("PRACTICE")
 
-        available_words = list(
+        base_words = list(
             Word.objects.filter(language="en", is_active=True)
-            .exclude(id__in=blacklist_ids)
             .only("id", "text", "difficulty_score", "embedding")
         )
 
-        if len(available_words) < count:
+        if len(base_words) < count:
             raise ValueError("Not enough words available to generate a practice set.")
 
-        selected = rng.sample(available_words, count)
+        fresh_words = [word for word in base_words if word.pk not in previously_used_ids and word.pk not in blacklist_ids]
+        stale_words = [word for word in base_words if word.pk in previously_used_ids and word.pk not in blacklist_ids]
+        fallback_words = [word for word in base_words if word.pk in blacklist_ids]
+
+        rng.shuffle(fresh_words)
+        rng.shuffle(stale_words)
+        rng.shuffle(fallback_words)
+
+        selected = []
+        for pool in (fresh_words, stale_words, fallback_words):
+            needed = count - len(selected)
+            if needed <= 0:
+                break
+            selected.extend(pool[:needed])
+
+        if len(selected) < count:
+            raise ValueError("Unable to build a complete practice set.")
 
         try:
             practice_set, _ = DailyPracticeSet.objects.get_or_create(date=today)
