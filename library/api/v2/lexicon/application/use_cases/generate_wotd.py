@@ -68,6 +68,14 @@ def _recent_blacklist_ids(date_value, days: int):
     )
 
 
+def _previously_used_ids(usage_type: str):
+    return set(
+        WordUsage.objects.filter(usage_type=usage_type)
+        .values_list("word_id", flat=True)
+        .distinct()
+    )
+
+
 def _top_up_with_sophisticated_seeds(blacklist_ids, rng):
     existing_texts = {
         normalize_text(text)
@@ -107,15 +115,23 @@ def generate_word_of_the_day(date=None):
             return existing
 
         blacklist_ids = set(_recent_blacklist_ids(target_date, WOTD_BLACKLIST_DAYS))
+        previously_used_ids = _previously_used_ids("WOTD")
 
         candidates = list(
             Word.objects.filter(language="en", is_active=True, is_sophisticated=True)
-            .exclude(id__in=blacklist_ids)
             .only("id", "text", "difficulty_score", "embedding")
             .order_by("-difficulty_score", "-created_at")[:100]
         )
 
-        word = rng.choice(candidates) if candidates else None
+        fresh_candidates = [word for word in candidates if word.pk not in previously_used_ids and word.pk not in blacklist_ids]
+        stale_candidates = [word for word in candidates if word.pk in previously_used_ids and word.pk not in blacklist_ids]
+        fallback_candidates = [word for word in candidates if word.pk in blacklist_ids]
+
+        word = None
+        for pool in (fresh_candidates, stale_candidates, fallback_candidates):
+            if pool:
+                word = rng.choice(pool)
+                break
 
         if not word:
             word = _top_up_with_sophisticated_seeds(blacklist_ids, rng)
