@@ -9,7 +9,7 @@ from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from ...application.constants import SEED_WORDS, WOTD_BLACKLIST_DAYS
+from ...application.constants import SEED_WORDS, WOTD_BLACKLIST_DAYS, WOTD_IMPORTANCE_THRESHOLD
 from ...application.utils import is_sophisticated_word, normalize_text
 from ...models import Word, WordOfTheDay, WordUsage
 from .search_word import fetch_and_store_word
@@ -17,6 +17,7 @@ from .search_word import fetch_and_store_word
 logger = logging.getLogger(__name__)
 
 _LOCK_TIMEOUT_SECONDS = 60
+_PRIORITY_SOURCES = {"FDA", "MW", "MIXED"}
 
 
 def _acquire_lock(lock_key: str) -> str | None:
@@ -59,20 +60,33 @@ def _existing_wotd(date_value):
     return _prefetched_wotd_queryset().filter(date=date_value).first()
 
 
-def _recent_blacklist_ids(date_value, days: int):
-    cutoff = date_value - timedelta(days=days)
-    return (
-        WordUsage.objects.filter(used_on__gte=cutoff)
-        .values_list("word_id", flat=True)
-        .distinct()
+def _usage_ids_for_date(usage_type: str, target_date, *, days_back: int):
+    cutoff = target_date - timedelta(days=days_back)
+    return set(
+        WordUsage.objects.filter(
+            usage_type=usage_type,
+            used_on__gte=cutoff,
+        ).values_list("word_id", flat=True)
     )
 
 
-def _previously_used_ids(usage_type: str):
-    return set(
-        WordUsage.objects.filter(usage_type=usage_type)
-        .values_list("word_id", flat=True)
-        .distinct()
+def _candidate_priority(word, recent_ids):
+    is_important = (
+        word.is_sophisticated
+        or word.difficulty_score >= WOTD_IMPORTANCE_THRESHOLD
+        or len(word.text) >= 8
+    )
+    source_bonus = 1 if word.source_api in _PRIORITY_SOURCES else 0
+    recent_penalty = -1 if word.pk in recent_ids else 0
+
+    return (
+        1 if is_important else 0,
+        round(float(word.difficulty_score or 0.0), 3),
+        source_bonus,
+        min(len(word.text), 20),
+        recent_penalty,
+        -min(int(word.search_count or 0), 1000),
+        word.text,
     )
 
 
@@ -100,7 +114,7 @@ def _top_up_with_sophisticated_seeds(blacklist_ids, rng):
 
 
 @transaction.atomic
-def generate_word_of_the_day(date=None):
+def generate_word_of_the_day(date=None, allow_remote_fetch: bool = True):
     target_date = date or timezone.localdate()
     rng = random.Random(str(target_date))
     lock_key = f"lock:wotd:{target_date.isoformat()}"
@@ -114,36 +128,44 @@ def generate_word_of_the_day(date=None):
         if existing:
             return existing
 
-        blacklist_ids = set(_recent_blacklist_ids(target_date, WOTD_BLACKLIST_DAYS))
-        previously_used_ids = _previously_used_ids("WOTD")
+        yesterday_ids = _usage_ids_for_date("WOTD", target_date, days_back=1)
+        recent_ids = _usage_ids_for_date("WOTD", target_date, days_back=WOTD_BLACKLIST_DAYS)
 
         candidates = list(
-            Word.objects.filter(language="en", is_active=True, is_sophisticated=True)
-            .only("id", "text", "difficulty_score", "embedding")
-            .order_by("-difficulty_score", "-created_at")[:100]
+            Word.objects.filter(language="en", is_active=True)
+            .exclude(pk__in=yesterday_ids)
+            .only("id", "text", "difficulty_score", "embedding", "is_sophisticated", "search_count", "source_api")
+            .order_by("-difficulty_score", "-created_at")[:200]
         )
 
-        fresh_candidates = [word for word in candidates if word.pk not in previously_used_ids and word.pk not in blacklist_ids]
-        stale_candidates = [word for word in candidates if word.pk in previously_used_ids and word.pk not in blacklist_ids]
-        fallback_candidates = [word for word in candidates if word.pk in blacklist_ids]
+        important_candidates = [word for word in candidates if _candidate_priority(word, recent_ids)[0] == 1]
+        ordered_candidates = important_candidates if important_candidates else candidates
 
-        word = None
-        for pool in (fresh_candidates, stale_candidates, fallback_candidates):
-            if pool:
-                word = rng.choice(pool)
-                break
+        ordered_candidates = sorted(
+            ordered_candidates,
+            key=lambda word: _candidate_priority(word, recent_ids),
+            reverse=True,
+        )
 
-        if not word:
+        word = ordered_candidates[0] if ordered_candidates else None
+
+        if not word and allow_remote_fetch:
+            blacklist_ids = set(recent_ids) | set(yesterday_ids)
             word = _top_up_with_sophisticated_seeds(blacklist_ids, rng)
 
-        if not word:
+        if not word and allow_remote_fetch:
             fallback = list(
                 Word.objects.filter(language="en", is_active=True)
-                .exclude(id__in=blacklist_ids)
-                .only("id", "text", "difficulty_score", "embedding")
-                .order_by("-difficulty_score", "-created_at")[:100]
+                .exclude(pk__in=yesterday_ids)
+                .only("id", "text", "difficulty_score", "embedding", "is_sophisticated", "search_count", "source_api")
+                .order_by("-difficulty_score", "-created_at")[:200]
             )
-            word = rng.choice(fallback) if fallback else None
+            fallback = sorted(
+                fallback,
+                key=lambda item: _candidate_priority(item, recent_ids),
+                reverse=True,
+            )
+            word = fallback[0] if fallback else None
 
         if not word:
             raise ValueError("Unable to generate a word of the day.")
@@ -169,5 +191,3 @@ def generate_word_of_the_day(date=None):
 
     finally:
         _release_lock(lock_key, lock_token)
-
-        

@@ -10,12 +10,29 @@ from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from ...application.constants import DEFAULT_PRACTICE_COUNT, PRACTICE_BLACKLIST_DAYS, SEED_WORDS
+from ...application.constants import (
+    DEFAULT_PRACTICE_COUNT,
+    MAX_PRACTICE_COUNT,
+    MIN_PRACTICE_COUNT,
+    PRACTICE_BLACKLIST_DAYS,
+    PRACTICE_IMPORTANCE_THRESHOLD,
+    SEED_WORDS,
+)
+from ...application.utils import normalize_text
 from ...models import DailyPracticeSet, Word, WordUsage
 
 logger = logging.getLogger(__name__)
 
 _LOCK_TIMEOUT_SECONDS = 60
+_PRIORITY_SOURCES = {"FDA", "MW", "MIXED"}
+
+
+def _normalize_count(count):
+    try:
+        parsed_count = int(count)
+    except (TypeError, ValueError):
+        parsed_count = DEFAULT_PRACTICE_COUNT
+    return max(MIN_PRACTICE_COUNT, min(MAX_PRACTICE_COUNT, parsed_count))
 
 
 def _acquire_lock(lock_key: str):
@@ -58,23 +75,6 @@ def _queue_embedding_refresh(word_ids):
     transaction.on_commit(lambda ids=ids: _dispatch(ids))
 
 
-def _recent_blacklist_ids(today, days: int):
-    cutoff = today - timedelta(days=days)
-    return (
-        WordUsage.objects.filter(used_on__gte=cutoff)
-        .values_list("word_id", flat=True)
-        .distinct()
-    )
-
-
-def _previously_used_ids(usage_type: str):
-    return set(
-        WordUsage.objects.filter(usage_type=usage_type)
-        .values_list("word_id", flat=True)
-        .distinct()
-    )
-
-
 def _prefetched_practice_set_queryset():
     return DailyPracticeSet.objects.prefetch_related(
         "words__categories",
@@ -84,34 +84,119 @@ def _prefetched_practice_set_queryset():
     )
 
 
-def _existing_practice_set(today):
-    return _prefetched_practice_set_queryset().filter(date=today).first()
-
-
-def _active_word_count(language: str = "en") -> int:
-    return Word.objects.filter(language=language, is_active=True).count()
+def _existing_practice_set(target_date):
+    return _prefetched_practice_set_queryset().filter(date=target_date).first()
 
 
 def _top_up_seed_words(minimum_count: int, language: str = "en"):
     """
-    Populate local lexicon inventory using configured seed words.
-
-    This function is intended for background jobs only and may perform
-    remote API lookups through fetch_and_store_word.
+    Grow the local lexicon inventory gradually, one seed at a time.
+    This keeps the midnight job predictable on free-tier infrastructure.
     """
-    if _active_word_count(language=language) >= minimum_count:
-        return
-
     from .search_word import fetch_and_store_word
 
-    for seed in SEED_WORDS:
-        if _active_word_count(language=language) >= minimum_count:
+    active_count = Word.objects.filter(language=language, is_active=True).count()
+    if active_count >= minimum_count:
+        return
+
+    existing_texts = {
+        normalize_text(text)
+        for text in Word.objects.filter(language=language).values_list("text", flat=True)
+    }
+
+    seeds = [normalize_text(word) for word in SEED_WORDS if len(normalize_text(word)) >= 8]
+    random.shuffle(seeds)
+
+    for seed in seeds:
+        if active_count >= minimum_count:
             break
 
+        if seed in existing_texts:
+            continue
+
         try:
-            fetch_and_store_word(seed, language=language, increment_search_count=False)
+            new_word, _ = fetch_and_store_word(seed, language=language, increment_search_count=False)
         except Exception as exc:
             logger.warning("Seed top-up failed for word=%s language=%s: %s", seed, language, exc)
+            continue
+
+        if new_word:
+            existing_texts.add(new_word.text)
+            active_count += 1
+
+
+def _usage_ids_for_date(usage_type: str, target_date, *, days_back: int):
+    cutoff = target_date - timedelta(days=days_back)
+    return set(
+        WordUsage.objects.filter(
+            usage_type=usage_type,
+            used_on__gte=cutoff,
+        ).values_list("word_id", flat=True)
+    )
+
+
+def _word_importance_key(word, recent_ids, important_threshold: float):
+    is_important = (
+        word.is_sophisticated
+        or word.difficulty_score >= important_threshold
+        or len(word.text) >= 7
+    )
+    source_bonus = 1 if word.source_api in _PRIORITY_SOURCES else 0
+    recent_penalty = -1 if word.pk in recent_ids else 0
+
+    return (
+        1 if is_important else 0,
+        round(float(word.difficulty_score or 0.0), 3),
+        source_bonus,
+        min(len(word.text), 20),
+        recent_penalty,
+        -min(int(word.search_count or 0), 1000),
+        word.text,
+    )
+
+
+def _select_words_for_practice(target_date, count: int, allow_remote_fetch: bool):
+    yesterday_ids = _usage_ids_for_date("PRACTICE", target_date, days_back=1)
+    recent_ids = _usage_ids_for_date("PRACTICE", target_date, days_back=PRACTICE_BLACKLIST_DAYS)
+
+    base_words = list(
+        Word.objects.filter(language="en", is_active=True)
+        .exclude(pk__in=yesterday_ids)
+        .only("id", "text", "difficulty_score", "embedding", "is_sophisticated", "search_count", "source_api")
+    )
+
+    important_words = [
+        word for word in base_words if _word_importance_key(word, recent_ids, PRACTICE_IMPORTANCE_THRESHOLD)[0] == 1
+    ]
+    candidate_words = important_words if len(important_words) >= count else base_words
+
+    ordered = sorted(
+        candidate_words,
+        key=lambda word: _word_importance_key(word, recent_ids, PRACTICE_IMPORTANCE_THRESHOLD),
+        reverse=True,
+    )
+
+    if len(ordered) >= count:
+        return ordered[:count]
+
+    if allow_remote_fetch:
+        _top_up_seed_words(minimum_count=count, language="en")
+        base_words = list(
+            Word.objects.filter(language="en", is_active=True)
+            .exclude(pk__in=yesterday_ids)
+            .only("id", "text", "difficulty_score", "embedding", "is_sophisticated", "search_count", "source_api")
+        )
+        important_words = [
+            word for word in base_words if _word_importance_key(word, recent_ids, PRACTICE_IMPORTANCE_THRESHOLD)[0] == 1
+        ]
+        candidate_words = important_words if len(important_words) >= count else base_words
+        ordered = sorted(
+            candidate_words,
+            key=lambda word: _word_importance_key(word, recent_ids, PRACTICE_IMPORTANCE_THRESHOLD),
+            reverse=True,
+        )
+
+    return ordered[:count]
 
 
 @transaction.atomic
@@ -119,62 +204,43 @@ def generate_daily_practice_set(
     date=None,
     count: int = DEFAULT_PRACTICE_COUNT,
     seed_top_up: bool = False,
+    allow_remote_fetch: bool = False,
 ):
-    today = date or timezone.localdate()
-    rng = random.Random(str(today))
+    target_date = date or timezone.localdate()
+    count = _normalize_count(count)
 
-    lock_key = f"lock:practice_set:{today.isoformat()}"
+    lock_key = f"lock:practice_set:{target_date.isoformat()}"
     lock_token = _acquire_lock(lock_key)
 
     if lock_token is None:
-        return _existing_practice_set(today)
+        return _existing_practice_set(target_date)
 
     try:
-        existing = _existing_practice_set(today)
+        existing = _existing_practice_set(target_date)
         if existing:
             return existing
 
-        if seed_top_up:
-            _top_up_seed_words(minimum_count=count)
+        if seed_top_up and allow_remote_fetch:
+            _top_up_seed_words(minimum_count=count, language="en")
 
-        blacklist_ids = set(_recent_blacklist_ids(today, PRACTICE_BLACKLIST_DAYS))
-        previously_used_ids = _previously_used_ids("PRACTICE")
-
-        base_words = list(
-            Word.objects.filter(language="en", is_active=True)
-            .only("id", "text", "difficulty_score", "embedding")
+        selected = _select_words_for_practice(
+            target_date,
+            count=count,
+            allow_remote_fetch=allow_remote_fetch,
         )
 
-        if len(base_words) < count:
-            raise ValueError("Not enough words available to generate a practice set.")
-
-        fresh_words = [word for word in base_words if word.pk not in previously_used_ids and word.pk not in blacklist_ids]
-        stale_words = [word for word in base_words if word.pk in previously_used_ids and word.pk not in blacklist_ids]
-        fallback_words = [word for word in base_words if word.pk in blacklist_ids]
-
-        rng.shuffle(fresh_words)
-        rng.shuffle(stale_words)
-        rng.shuffle(fallback_words)
-
-        selected = []
-        for pool in (fresh_words, stale_words, fallback_words):
-            needed = count - len(selected)
-            if needed <= 0:
-                break
-            selected.extend(pool[:needed])
-
         if len(selected) < count:
-            raise ValueError("Unable to build a complete practice set.")
+            raise ValueError("Unable to build a complete practice set from the available important words.")
 
         try:
-            practice_set, _ = DailyPracticeSet.objects.get_or_create(date=today)
+            practice_set, _ = DailyPracticeSet.objects.get_or_create(date=target_date)
         except IntegrityError:
-            practice_set = DailyPracticeSet.objects.get(date=today)
+            practice_set = DailyPracticeSet.objects.get(date=target_date)
 
         practice_set.words.set(selected)
 
         WordUsage.objects.bulk_create(
-            [WordUsage(word=word, usage_type="PRACTICE", used_on=today) for word in selected],
+            [WordUsage(word=word, usage_type="PRACTICE", used_on=target_date) for word in selected],
             ignore_conflicts=True,
         )
 
@@ -187,5 +253,3 @@ def generate_daily_practice_set(
 
     finally:
         _release_lock(lock_key, lock_token)
-
-        

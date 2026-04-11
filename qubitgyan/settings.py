@@ -131,7 +131,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # Internationalization
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
 USE_TZ = True
 
@@ -294,14 +294,15 @@ CELERY_TASK_EAGER_PROPAGATES = True
 ENABLE_ASYNC_TASKS = _env_bool("ENABLE_ASYNC_TASKS", default=bool(CELERY_BROKER_URL))
 
 
-DAILY_PRACTICE_PREGEN_HOUR_UTC = int(os.environ.get("DAILY_PRACTICE_PREGEN_HOUR_UTC", "9"))
-DAILY_PRACTICE_PREGEN_MINUTE_UTC = int(os.environ.get("DAILY_PRACTICE_PREGEN_MINUTE_UTC", "0"))
+DAILY_PRACTICE_PREGEN_HOUR = int(os.environ.get("DAILY_PRACTICE_PREGEN_HOUR", "0"))
+DAILY_PRACTICE_PREGEN_MINUTE = int(os.environ.get("DAILY_PRACTICE_PREGEN_MINUTE", "5"))
 DAILY_PRACTICE_SEED_TOP_UP = _env_bool("DAILY_PRACTICE_SEED_TOP_UP", default=True)
 
 CELERY_BEAT_SCHEDULE = {
-    "lexicon-generate-daily-practice-set": {
-        "task": "library.api.v2.lexicon.tasks.generate_daily_practice_set_job",
-        "schedule": crontab(minute=DAILY_PRACTICE_PREGEN_MINUTE_UTC, hour=DAILY_PRACTICE_PREGEN_HOUR_UTC),
-        "kwargs": {"seed_top_up": DAILY_PRACTICE_SEED_TOP_UP},
+    "lexicon-warm-daily-content": {
+        "task": "library.api.v2.lexicon.tasks.generate_lexicon_daily_content_job",
+        "schedule": crontab(minute=DAILY_PRACTICE_PREGEN_MINUTE, hour=DAILY_PRACTICE_PREGEN_HOUR),
+        "kwargs": {"seed_top_up": DAILY_PRACTICE_SEED_TOP_UP, "count": 18},
     },
 }
+
