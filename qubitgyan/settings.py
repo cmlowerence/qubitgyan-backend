@@ -294,15 +294,12 @@ CELERY_TASK_EAGER_PROPAGATES = True
 ENABLE_ASYNC_TASKS = _env_bool("ENABLE_ASYNC_TASKS", default=bool(CELERY_BROKER_URL))
 
 
-DAILY_PRACTICE_PREGEN_HOUR = int(os.environ.get("DAILY_PRACTICE_PREGEN_HOUR", "0"))
-DAILY_PRACTICE_PREGEN_MINUTE = int(os.environ.get("DAILY_PRACTICE_PREGEN_MINUTE", "5"))
-DAILY_PRACTICE_SEED_TOP_UP = _env_bool("DAILY_PRACTICE_SEED_TOP_UP", default=True)
+LEXICON_NIGHTLY_PIPELINE_HOUR = int(os.environ.get("LEXICON_NIGHTLY_PIPELINE_HOUR", "0"))
+LEXICON_NIGHTLY_PIPELINE_MINUTE = int(os.environ.get("LEXICON_NIGHTLY_PIPELINE_MINUTE", "0"))
 
 CELERY_BEAT_SCHEDULE = {
-    "lexicon-warm-daily-content": {
-        "task": "library.api.v2.lexicon.tasks.generate_lexicon_daily_content_job",
-        "schedule": crontab(minute=DAILY_PRACTICE_PREGEN_MINUTE, hour=DAILY_PRACTICE_PREGEN_HOUR),
-        "kwargs": {"seed_top_up": DAILY_PRACTICE_SEED_TOP_UP, "count": 18},
+    "lexicon-midnight-pipeline": {
+        "task": "library.api.v2.lexicon.tasks.run_midnight_lexicon_pipeline",
+        "schedule": crontab(minute=LEXICON_NIGHTLY_PIPELINE_MINUTE, hour=LEXICON_NIGHTLY_PIPELINE_HOUR),
     },
 }
-

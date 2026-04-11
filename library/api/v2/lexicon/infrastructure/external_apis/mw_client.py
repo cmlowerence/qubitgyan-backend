@@ -1,4 +1,3 @@
-
 # qubitgyan-backend/library/api/v2/lexicon/infrastructure/external_apis/mw_client.py
 
 import logging
@@ -23,6 +22,69 @@ def _unique_normalized(values):
         seen.add(key)
         items.append(text)
     return items
+
+
+def _merge_payloads(payloads):
+    merged = {
+        "phonetic_text": "",
+        "pronunciations": [],
+        "meanings": [],
+        "thesaurus": [],
+    }
+
+    for payload in payloads:
+        if not payload:
+            continue
+        if not merged["phonetic_text"] and payload.get("phonetic_text"):
+            merged["phonetic_text"] = payload["phonetic_text"]
+        merged["pronunciations"].extend(payload.get("pronunciations", []))
+        merged["meanings"].extend(payload.get("meanings", []))
+        merged["thesaurus"].extend(payload.get("thesaurus", []))
+
+    deduped = []
+    seen = set()
+    for item in merged["pronunciations"]:
+        audio = (item.get("audio_url") or "").strip()
+        region = (item.get("region") or "GEN").strip().upper()
+        if not audio:
+            continue
+        key = (audio, region)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({"audio_url": audio, "region": region})
+    merged["pronunciations"] = deduped
+
+    deduped = []
+    seen = set()
+    for item in merged["meanings"]:
+        pos = (item.get("part_of_speech") or "").strip()
+        definition = (item.get("definition") or "").strip()
+        example = (item.get("example") or "").strip()
+        if not definition:
+            continue
+        key = (pos, definition, example)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({"part_of_speech": pos, "definition": definition, "example": example})
+    merged["meanings"] = deduped
+
+    deduped = []
+    seen = set()
+    for item in merged["thesaurus"]:
+        text = (item.get("related_word_text") or "").strip().lower()
+        relation = (item.get("relation_type") or "SYN").strip().upper()
+        if not text:
+            continue
+        key = (text, relation)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({"related_word_text": text, "relation_type": relation})
+    merged["thesaurus"] = deduped
+
+    return merged
 
 
 class MWClient:
@@ -133,8 +195,11 @@ class MWClient:
             if isinstance(data[0], str):
                 return None, _unique_normalized(data[:10])
 
-            entry = data[0]
-            return cls._parse_dictionary_entry(entry), []
+            payloads = [cls._parse_dictionary_entry(entry) for entry in data if isinstance(entry, dict)]
+            if not payloads:
+                return None, []
+
+            return _merge_payloads(payloads), []
         except (requests.RequestException, ValueError, TypeError, KeyError, IndexError) as exc:
             logger.warning("MW dictionary fetch failed for %s: %s", word, exc)
             return None, []
@@ -163,9 +228,11 @@ class MWClient:
             if isinstance(data[0], str):
                 return None, _unique_normalized(data[:10])
 
-            entry = data[0]
-            return cls._parse_thesaurus_entry(entry), []
+            payloads = [cls._parse_thesaurus_entry(entry) for entry in data if isinstance(entry, dict)]
+            if not payloads:
+                return None, []
+
+            return _merge_payloads(payloads), []
         except (requests.RequestException, ValueError, TypeError, KeyError, IndexError) as exc:
             logger.warning("MW thesaurus fetch failed for %s: %s", word, exc)
             return None, []
-

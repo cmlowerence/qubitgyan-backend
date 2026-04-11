@@ -7,17 +7,22 @@ from datetime import timedelta
 
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
+from django.db.models import Count
 from django.utils import timezone
 
-from ...application.constants import SEED_WORDS, WOTD_BLACKLIST_DAYS, WOTD_IMPORTANCE_THRESHOLD
-from ...application.utils import is_sophisticated_word, normalize_text
+from ...application.constants import (
+    MIN_MEANINGS_FOR_SELECTION,
+    NIGHTLY_IMPORT_RELATED_LIMIT,
+    WOTD_BLACKLIST_DAYS,
+    WOTD_MIN_DIFFICULTY_SCORE,
+)
+from ...application.utils import normalize_text
 from ...models import Word, WordOfTheDay, WordUsage
 from .search_word import fetch_and_store_word
 
 logger = logging.getLogger(__name__)
 
 _LOCK_TIMEOUT_SECONDS = 60
-_PRIORITY_SOURCES = {"FDA", "MW", "MIXED"}
 
 
 def _acquire_lock(lock_key: str) -> str | None:
@@ -60,33 +65,36 @@ def _existing_wotd(date_value):
     return _prefetched_wotd_queryset().filter(date=date_value).first()
 
 
-def _usage_ids_for_date(usage_type: str, target_date, *, days_back: int):
-    cutoff = target_date - timedelta(days=days_back)
-    return set(
-        WordUsage.objects.filter(
-            usage_type=usage_type,
-            used_on__gte=cutoff,
-        ).values_list("word_id", flat=True)
-    )
-
-
-def _candidate_priority(word, recent_ids):
-    is_important = (
-        word.is_sophisticated
-        or word.difficulty_score >= WOTD_IMPORTANCE_THRESHOLD
-        or len(word.text) >= 8
-    )
-    source_bonus = 1 if word.source_api in _PRIORITY_SOURCES else 0
-    recent_penalty = -1 if word.pk in recent_ids else 0
-
+def _recent_blacklist_ids(date_value, days: int):
+    cutoff = date_value - timedelta(days=days)
     return (
-        1 if is_important else 0,
-        round(float(word.difficulty_score or 0.0), 3),
-        source_bonus,
-        min(len(word.text), 20),
-        recent_penalty,
-        -min(int(word.search_count or 0), 1000),
-        word.text,
+        WordUsage.objects.filter(used_on__gte=cutoff)
+        .values_list("word_id", flat=True)
+        .distinct()
+    )
+
+
+def _previously_used_ids(usage_type: str):
+    return set(
+        WordUsage.objects.filter(usage_type=usage_type)
+        .values_list("word_id", flat=True)
+        .distinct()
+    )
+
+
+def _candidate_queryset():
+    return (
+        Word.objects.filter(language="en", is_active=True, is_sophisticated=True)
+        .annotate(
+            meaning_count=Count("meanings", distinct=True),
+            pronunciation_count=Count("pronunciations", distinct=True),
+            thesaurus_count=Count("thesaurus_entries", distinct=True),
+        )
+        .filter(
+            meaning_count__gte=MIN_MEANINGS_FOR_SELECTION,
+            difficulty_score__gte=WOTD_MIN_DIFFICULTY_SCORE,
+        )
+        .order_by("-difficulty_score", "-meaning_count", "-thesaurus_count", "-created_at")
     )
 
 
@@ -95,18 +103,39 @@ def _top_up_with_sophisticated_seeds(blacklist_ids, rng):
         normalize_text(text)
         for text in Word.objects.filter(language="en", is_active=True).values_list("text", flat=True)
     }
-    seeds = [normalize_text(word) for word in SEED_WORDS if len(normalize_text(word)) >= 8]
+    seeds = [normalize_text(word) for word in [
+        "aberration", "benevolent", "capricious", "dichotomy", "ephemeral",
+        "fastidious", "garrulous", "harangue", "iconoclast", "juxtapose",
+        "laconic", "maverick", "nebulous", "obfuscate", "paradigm",
+        "quixotic", "resilient", "sycophant", "trepidation", "ubiquitous",
+        "vacillate", "xenophobia", "zealous", "alacrity", "bellicose",
+        "conundrum", "deleterious", "enervate", "fortuitous", "gratuitous",
+        "hegemony", "impetuous", "judicious", "kaleidoscope", "loquacious",
+        "meticulous", "nonchalant", "obstinate", "perfunctory", "reticent",
+        "scrupulous", "tangible", "unfettered", "vindicate", "winsome",
+        "yearning", "zephyr", "ascetic", "catharsis", "deference",
+        "equanimity", "fervent", "gregarious", "halcyon", "inscrutable",
+        "juxtaposition", "knavish", "legitimate", "melancholy", "nostalgic",
+    ] if len(normalize_text(word)) >= 8]
     rng.shuffle(seeds)
 
     for seed in seeds:
         if seed in existing_texts:
             continue
 
-        new_word, _ = fetch_and_store_word(seed, "en", increment_search_count=False)
+        new_word, _ = fetch_and_store_word(
+            seed,
+            "en",
+            increment_search_count=False,
+            import_related=True,
+            related_depth=1,
+            related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+            force_enrich=True,
+        )
         if (
             new_word
             and new_word.pk not in blacklist_ids
-            and is_sophisticated_word(new_word.text, new_word.difficulty_score)
+            and new_word.is_sophisticated
         ):
             return new_word
 
@@ -114,7 +143,7 @@ def _top_up_with_sophisticated_seeds(blacklist_ids, rng):
 
 
 @transaction.atomic
-def generate_word_of_the_day(date=None, allow_remote_fetch: bool = True):
+def generate_word_of_the_day(date=None):
     target_date = date or timezone.localdate()
     rng = random.Random(str(target_date))
     lock_key = f"lock:wotd:{target_date.isoformat()}"
@@ -128,44 +157,37 @@ def generate_word_of_the_day(date=None, allow_remote_fetch: bool = True):
         if existing:
             return existing
 
-        yesterday_ids = _usage_ids_for_date("WOTD", target_date, days_back=1)
-        recent_ids = _usage_ids_for_date("WOTD", target_date, days_back=WOTD_BLACKLIST_DAYS)
+        blacklist_ids = set(_recent_blacklist_ids(target_date, WOTD_BLACKLIST_DAYS))
+        previously_used_ids = _previously_used_ids("WOTD")
 
-        candidates = list(
-            Word.objects.filter(language="en", is_active=True)
-            .exclude(pk__in=yesterday_ids)
-            .only("id", "text", "difficulty_score", "embedding", "is_sophisticated", "search_count", "source_api")
-            .order_by("-difficulty_score", "-created_at")[:200]
-        )
+        candidates = list(_candidate_queryset()[:150])
+        fresh_candidates = [word for word in candidates if word.pk not in previously_used_ids and word.pk not in blacklist_ids]
+        stale_candidates = [word for word in candidates if word.pk in previously_used_ids and word.pk not in blacklist_ids]
+        fallback_candidates = [word for word in candidates if word.pk in blacklist_ids]
 
-        important_candidates = [word for word in candidates if _candidate_priority(word, recent_ids)[0] == 1]
-        ordered_candidates = important_candidates if important_candidates else candidates
+        word = None
+        for pool in (fresh_candidates, stale_candidates, fallback_candidates):
+            if pool:
+                word = rng.choice(pool)
+                break
 
-        ordered_candidates = sorted(
-            ordered_candidates,
-            key=lambda word: _candidate_priority(word, recent_ids),
-            reverse=True,
-        )
-
-        word = ordered_candidates[0] if ordered_candidates else None
-
-        if not word and allow_remote_fetch:
-            blacklist_ids = set(recent_ids) | set(yesterday_ids)
+        if not word:
             word = _top_up_with_sophisticated_seeds(blacklist_ids, rng)
 
-        if not word and allow_remote_fetch:
+        if not word:
             fallback = list(
                 Word.objects.filter(language="en", is_active=True)
-                .exclude(pk__in=yesterday_ids)
-                .only("id", "text", "difficulty_score", "embedding", "is_sophisticated", "search_count", "source_api")
-                .order_by("-difficulty_score", "-created_at")[:200]
+                .annotate(
+                    meaning_count=Count("meanings", distinct=True),
+                    pronunciation_count=Count("pronunciations", distinct=True),
+                    thesaurus_count=Count("thesaurus_entries", distinct=True),
+                )
+                .filter(meaning_count__gte=MIN_MEANINGS_FOR_SELECTION)
+                .exclude(id__in=blacklist_ids)
+                .only("id", "text", "difficulty_score", "embedding")
+                .order_by("-difficulty_score", "-created_at")[:100]
             )
-            fallback = sorted(
-                fallback,
-                key=lambda item: _candidate_priority(item, recent_ids),
-                reverse=True,
-            )
-            word = fallback[0] if fallback else None
+            word = rng.choice(fallback) if fallback else None
 
         if not word:
             raise ValueError("Unable to generate a word of the day.")

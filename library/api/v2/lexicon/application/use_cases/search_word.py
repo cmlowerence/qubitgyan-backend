@@ -16,6 +16,8 @@ from ...models import Meaning, Pronunciation, Thesaurus, Word
 logger = logging.getLogger(__name__)
 
 ENRICHMENT_COOLDOWN_HOURS = 24
+DEFAULT_RELATED_IMPORT_LIMIT = 4
+DEFAULT_RELATED_IMPORT_DEPTH = 1
 
 
 def _prefetched_word(word: Word) -> Word:
@@ -105,11 +107,7 @@ def _merge_payloads(*payloads):
             if item.get("audio_url")
         ]
     )
-
-    merged["pronunciations"] = [
-        {"audio_url": url, "region": region}
-        for url, region in pronunciation_pairs
-    ]
+    merged["pronunciations"] = [{"audio_url": url, "region": region} for url, region in pronunciation_pairs]
 
     meaning_triples = unique_list(
         [
@@ -122,7 +120,6 @@ def _merge_payloads(*payloads):
             if item.get("definition")
         ]
     )
-
     merged["meanings"] = [
         {"part_of_speech": pos, "definition": definition, "example": example}
         for pos, definition, example in meaning_triples
@@ -138,7 +135,6 @@ def _merge_payloads(*payloads):
             if item.get("related_word_text")
         ]
     )
-
     merged["thesaurus"] = [
         {"related_word_text": text, "relation_type": rel}
         for text, rel in thesaurus_pairs
@@ -170,6 +166,54 @@ def _merge_source_api(current_source: str, payload_sources: Iterable[str]) -> st
         return "MIXED" if len(payload_sources) > 1 else current_source
 
     return "MIXED"
+
+
+def _sync_thesaurus_links(word: Word) -> None:
+    unresolved = list(
+        word.thesaurus_entries.filter(related_word__isnull=True).values(
+            "id",
+            "related_word_text",
+            "relation_type",
+        )
+    )
+
+    if not unresolved:
+        return
+
+    linked = 0
+    for entry in unresolved:
+        related_text = normalize_text(entry["related_word_text"])
+        if not related_text:
+            continue
+
+        related_word = (
+            Word.objects.filter(text=related_text, language=word.language, is_active=True)
+            .only("id")
+            .first()
+        )
+        if not related_word:
+            continue
+
+        Thesaurus.objects.filter(pk=entry["id"]).update(related_word=related_word)
+        linked += 1
+
+    if linked:
+        logger.info("Linked %s thesaurus relations for word=%s", linked, word.text)
+
+
+def _backfill_related_word_links(word: Word) -> int:
+    matches = (
+        Thesaurus.objects.filter(
+            related_word__isnull=True,
+            related_word_text=word.text,
+            word__language=word.language,
+        )
+        .exclude(word=word)
+    )
+    updated = matches.update(related_word=word)
+    if updated:
+        logger.info("Backfilled %s thesaurus relations for related word=%s", updated, word.text)
+    return updated
 
 
 def _upsert_related_data(word: Word, payload: dict, payload_sources: Iterable[str]):
@@ -240,6 +284,8 @@ def _upsert_related_data(word: Word, payload: dict, payload_sources: Iterable[st
         word.source_api = new_source
 
     word.save(update_fields=["difficulty_score", "is_sophisticated", "source_api", "updated_at"])
+    _backfill_related_word_links(word)
+    _sync_thesaurus_links(word)
 
 
 def _fetch_remote_payload(word_query: str, language: str):
@@ -267,23 +313,113 @@ def _fetch_remote_payload(word_query: str, language: str):
     return merged, suggestions, sources, fda_payload, mw_dict_payload, mw_thes_payload
 
 
-def enrich_existing_word_from_remote(word: Word, language: str = "en") -> bool:
+def _related_word_texts(word: Word, limit: int):
+    texts = []
+    seen = set()
+    for text in word.thesaurus_entries.values_list("related_word_text", flat=True):
+        normalized = normalize_text(text)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        texts.append(normalized)
+        if len(texts) >= limit:
+            break
+    return texts
+
+
+def _import_related_words(
+    word: Word,
+    language: str,
+    *,
+    depth: int = DEFAULT_RELATED_IMPORT_DEPTH,
+    limit: int = DEFAULT_RELATED_IMPORT_LIMIT,
+    visited: set[str] | None = None,
+):
+    if depth <= 0:
+        return []
+
+    visited = visited or set()
+    imported_words = []
+
+    for related_text in _related_word_texts(word, limit):
+        visit_key = f"{language}:{related_text}"
+        if visit_key in visited:
+            continue
+        visited.add(visit_key)
+
+        related_word, _ = fetch_and_store_word(
+            related_text,
+            language=language,
+            increment_search_count=False,
+            import_related=depth - 1 > 0,
+            related_depth=depth - 1,
+            related_limit=limit,
+            force_enrich=True,
+            visited=visited,
+        )
+        if related_word:
+            imported_words.append(related_word)
+
+    return imported_words
+
+
+def enrich_existing_word_from_remote(
+    word: Word,
+    language: str = "en",
+    *,
+    import_related: bool = True,
+    related_depth: int = DEFAULT_RELATED_IMPORT_DEPTH,
+    related_limit: int = DEFAULT_RELATED_IMPORT_LIMIT,
+    visited: set[str] | None = None,
+) -> bool:
     merged, _, sources, _, _, _ = _fetch_remote_payload(word.text, language)
 
     if not (merged["phonetic_text"] or merged["pronunciations"] or merged["meanings"] or merged["thesaurus"]):
         return False
 
     _upsert_related_data(word, merged, sources)
+    _backfill_related_word_links(word)
+
+    if import_related:
+        _import_related_words(
+            word,
+            language,
+            depth=related_depth,
+            limit=related_limit,
+            visited=visited,
+        )
+
     return True
 
 
 @transaction.atomic
-def fetch_and_store_word(word_query: str, language: str = "en", increment_search_count: bool = False):
+def fetch_and_store_word(
+    word_query: str,
+    language: str = "en",
+    increment_search_count: bool = False,
+    *,
+    import_related: bool = False,
+    related_depth: int = DEFAULT_RELATED_IMPORT_DEPTH,
+    related_limit: int = DEFAULT_RELATED_IMPORT_LIMIT,
+    force_enrich: bool = False,
+    visited: set[str] | None = None,
+):
     word_query = normalize_text(word_query)
     language = normalize_text(language) or "en"
 
     if not word_query:
         return None, []
+
+    visited = visited or set()
+    visit_key = f"{language}:{word_query}"
+    if visit_key in visited:
+        existing = (
+            Word.objects.prefetch_related("categories", "pronunciations", "meanings", "thesaurus_entries")
+            .filter(text=word_query, language=language)
+            .first()
+        )
+        return (_prefetched_word(existing), []) if existing else (None, [])
+    visited.add(visit_key)
 
     existing = (
         Word.objects.prefetch_related("categories", "pronunciations", "meanings", "thesaurus_entries")
@@ -296,7 +432,16 @@ def fetch_and_store_word(word_query: str, language: str = "en", increment_search
             Word.objects.filter(pk=existing.pk).update(search_count=F("search_count") + 1)
             existing.refresh_from_db(fields=["search_count"])
 
-        if _should_enrich(existing):
+        if force_enrich:
+            enrich_existing_word_from_remote(
+                existing,
+                language,
+                import_related=import_related,
+                related_depth=related_depth,
+                related_limit=related_limit,
+                visited=visited,
+            )
+        elif _should_enrich(existing):
             _queue_enrichment(existing.pk, language)
         elif getattr(existing, "embedding", None) in (None, [], {}):
             _queue_embedding_refresh(existing.pk)
@@ -347,6 +492,59 @@ def fetch_and_store_word(word_query: str, language: str = "en", increment_search
     word.save(update_fields=["phonetic_text", "source_api", "updated_at"])
 
     _upsert_related_data(word, merged, sources)
+    _backfill_related_word_links(word)
+
+    if import_related:
+        _import_related_words(
+            word,
+            language,
+            depth=related_depth,
+            limit=related_limit,
+            visited=visited,
+        )
+
     _queue_embedding_refresh(word.pk)
 
     return _prefetched_word(word), []
+
+
+def prime_remote_dictionary_inventory(
+    *,
+    seed_words: Iterable[str] | None = None,
+    language: str = "en",
+    limit: int = 8,
+    related_depth: int = DEFAULT_RELATED_IMPORT_DEPTH,
+    related_limit: int = DEFAULT_RELATED_IMPORT_LIMIT,
+):
+    from ...application.constants import SEED_WORDS
+
+    seeds = list(seed_words or SEED_WORDS)
+    selected = []
+    seen = set()
+
+    for seed in seeds:
+        normalized = normalize_text(seed)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        selected.append(normalized)
+        if len(selected) >= limit:
+            break
+
+    imported = []
+    visited = set()
+    for seed in selected:
+        word, _ = fetch_and_store_word(
+            seed,
+            language=language,
+            increment_search_count=False,
+            import_related=True,
+            related_depth=related_depth,
+            related_limit=related_limit,
+            force_enrich=True,
+            visited=visited,
+        )
+        if word:
+            imported.append(word)
+
+    return imported

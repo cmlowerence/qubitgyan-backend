@@ -9,7 +9,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ...application.constants import DEFAULT_PRACTICE_COUNT, TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
+from ...application.constants import TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
 from ...application.utils.embeddings import search_words_by_similarity
 from ...application.use_cases.generate_daily_set import generate_daily_practice_set
 from ...application.use_cases.generate_wotd import generate_word_of_the_day
@@ -94,12 +94,7 @@ class WordSearchView(APIView):
 class DailyPracticeSetView(APIView):
     def get(self, request):
         try:
-            practice_set = generate_daily_practice_set(
-                date=timezone.localdate(),
-                count=DEFAULT_PRACTICE_COUNT,
-                seed_top_up=False,
-                allow_remote_fetch=False,
-            )
+            practice_set = generate_daily_practice_set(date=timezone.localdate(), seed_top_up=True)
         except ValueError as exc:
             return Response(
                 {"error": str(exc)},
@@ -115,7 +110,7 @@ class DailyPracticeSetView(APIView):
 class WordOfTheDayView(APIView):
     def get(self, request):
         try:
-            wotd = generate_word_of_the_day(date=timezone.localdate(), allow_remote_fetch=True)
+            wotd = generate_word_of_the_day()
             return Response(
                 WordOfTheDayReadSerializer(wotd).data,
                 status=status.HTTP_200_OK,
@@ -143,3 +138,5 @@ class TrendingWordsView(APIView):
         cache.set(cache_key, data, TRENDING_CACHE_SECONDS)
 
         return Response(data, status=status.HTTP_200_OK)
+    
+    

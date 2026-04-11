@@ -1,11 +1,8 @@
-# qubitgyan-backend/library/api/v2/lexicon/tasks.py
-
 import logging
 
 from celery import shared_task
-from django.utils import timezone
 
-from .application.constants import DEFAULT_PRACTICE_COUNT
+from .application.constants import NIGHTLY_IMPORT_RELATED_LIMIT, NIGHTLY_IMPORT_SEED_LIMIT
 from .application.utils.embeddings import build_word_embedding_text, encode_text_to_vector
 from .models import Word
 
@@ -47,57 +44,58 @@ def enrich_word_record(self, word_id: str, language: str = "en"):
     except Word.DoesNotExist:
         return None
 
-    enriched = enrich_existing_word_from_remote(word, language)
+    enriched = enrich_existing_word_from_remote(
+        word,
+        language,
+        import_related=True,
+        related_depth=1,
+        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+    )
     refresh_word_embedding.delay(str(word.pk))
     return str(word.pk) if enriched else str(word.pk)
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
-def generate_daily_practice_set_job(self, seed_top_up: bool = True, count: int | None = None):
-    """Background job that prepares the daily practice set before the day starts."""
-    from .application.constants import DEFAULT_PRACTICE_COUNT
+def prime_lexicon_inventory_job(self):
+    from .application.use_cases.search_word import prime_remote_dictionary_inventory
+
+    imported = prime_remote_dictionary_inventory(
+        limit=NIGHTLY_IMPORT_SEED_LIMIT,
+        related_depth=1,
+        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+    )
+    return [str(word.pk) for word in imported]
+
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
+def generate_daily_practice_set_job(self, seed_top_up: bool = True):
     from .application.use_cases.generate_daily_set import generate_daily_practice_set
 
-    practice_count = count or DEFAULT_PRACTICE_COUNT
-    practice_set = generate_daily_practice_set(
-        date=timezone.localdate(),
-        count=practice_count,
-        seed_top_up=seed_top_up,
-        allow_remote_fetch=True,
-    )
+    practice_set = generate_daily_practice_set(seed_top_up=seed_top_up)
     return str(practice_set.pk) if practice_set else None
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
-def generate_word_of_the_day_job(self):
-    """Background job that prepares the next word of the day."""
-    from .application.use_cases.generate_wotd import generate_word_of_the_day
+def run_midnight_lexicon_pipeline(self):
+    from django.utils import timezone
 
-    wotd = generate_word_of_the_day(date=timezone.localdate(), allow_remote_fetch=True)
-    return str(wotd.pk) if wotd else None
-
-
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
-def generate_lexicon_daily_content_job(self, seed_top_up: bool = True, count: int | None = None):
-    """Single midnight job that warms both WOTD and practice content sequentially."""
-    from .application.constants import DEFAULT_PRACTICE_COUNT
     from .application.use_cases.generate_daily_set import generate_daily_practice_set
     from .application.use_cases.generate_wotd import generate_word_of_the_day
+    from .application.use_cases.search_word import prime_remote_dictionary_inventory
 
-    target_count = count or DEFAULT_PRACTICE_COUNT
-    today = timezone.localdate()
-
-    wotd = generate_word_of_the_day(date=today, allow_remote_fetch=True)
-    practice_set = generate_daily_practice_set(
-        date=today,
-        count=target_count,
-        seed_top_up=seed_top_up,
-        allow_remote_fetch=True,
+    target_date = timezone.localdate()
+    imported = prime_remote_dictionary_inventory(
+        limit=NIGHTLY_IMPORT_SEED_LIMIT,
+        related_depth=1,
+        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
     )
-
+    wotd = generate_word_of_the_day(date=target_date)
+    try:
+        practice_set = generate_daily_practice_set(date=target_date, seed_top_up=False)
+    except ValueError:
+        practice_set = generate_daily_practice_set(date=target_date, seed_top_up=True)
     return {
-        "date": today.isoformat(),
-        "wotd_id": str(wotd.pk) if wotd else None,
-        "practice_set_id": str(practice_set.pk) if practice_set else None,
-        "practice_count": target_count,
+        "imported": [str(word.pk) for word in imported],
+        "wotd": str(wotd.pk) if wotd else None,
+        "practice_set": str(practice_set.pk) if practice_set else None,
     }

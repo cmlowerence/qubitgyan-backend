@@ -1,8 +1,8 @@
+
 # qubitgyan-backend/library/api/v2/lexicon/serializers.py
 
 from rest_framework import serializers
 
-from .application.constants import MAX_PRACTICE_COUNT, MIN_PRACTICE_COUNT
 from .models import (
     DailyPracticeSet,
     Meaning,
@@ -144,7 +144,7 @@ class WordWriteSerializer(serializers.ModelSerializer):
     def validate_language(self, value):
         value = (value or "").strip().lower() or "en"
         return value
-
+    
     def _persist_relations(self, word, categories=None, meanings=None, pronunciations=None, thesaurus_entries=None):
         if categories is not None:
             word.categories.set(categories)
@@ -175,6 +175,7 @@ class WordWriteSerializer(serializers.ModelSerializer):
                     )
                 )
             Thesaurus.objects.bulk_create(instances, ignore_conflicts=True)
+
 
     def create(self, validated_data):
         categories = validated_data.pop("categories", None)
@@ -221,11 +222,10 @@ class WordOfTheDayWriteSerializer(serializers.ModelSerializer):
         fields = ["date", "word"]
 
     def validate(self, attrs):
+        date = attrs.get("date")
         word = attrs.get("word")
-        if word and word.language != "en":
+        if date and word and word.language != "en":
             raise serializers.ValidationError({"word": "Word of the day must be in English."})
-        if word and not word.is_active:
-            raise serializers.ValidationError({"word": "Word of the day must be active."})
         return attrs
 
 
@@ -250,20 +250,7 @@ class DailyPracticeSetWriteSerializer(serializers.Serializer):
             seen.add(word.pk)
             unique_words.append(word)
 
-        if len(unique_words) < MIN_PRACTICE_COUNT:
-            raise serializers.ValidationError(
-                f"Provide at least {MIN_PRACTICE_COUNT} unique words."
-            )
-
-        if len(unique_words) > MAX_PRACTICE_COUNT:
-            raise serializers.ValidationError(
-                f"Provide at most {MAX_PRACTICE_COUNT} words."
-            )
-
-        for word in unique_words:
-            if word.language != "en":
-                raise serializers.ValidationError("Practice sets must contain English words only.")
-            if not word.is_active:
-                raise serializers.ValidationError("Practice sets can only use active words.")
+        if len(unique_words) < 15 or len(unique_words) > 20:
+            raise serializers.ValidationError("Daily practice sets must contain between 15 and 20 unique words.")
 
         return unique_words
