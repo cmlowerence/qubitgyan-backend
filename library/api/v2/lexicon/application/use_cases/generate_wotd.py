@@ -25,6 +25,63 @@ logger = logging.getLogger(__name__)
 _LOCK_TIMEOUT_SECONDS = 60
 
 
+def _has_items(value) -> bool:
+    if value is None:
+        return False
+
+    if isinstance(value, str):
+        return bool(value.strip())
+
+    size = getattr(value, "size", None)
+    if isinstance(size, int):
+        return size > 0
+
+    try:
+        return len(value) > 0
+    except TypeError:
+        return bool(value)
+    except ValueError:
+        size = getattr(value, "size", None)
+        if isinstance(size, int):
+            return size > 0
+        return True
+
+
+def _is_missing_embedding(value) -> bool:
+    if value is None:
+        return True
+
+    if isinstance(value, str):
+        return not value.strip()
+
+    size = getattr(value, "size", None)
+    if isinstance(size, int):
+        return size == 0
+
+    try:
+        return len(value) == 0
+    except TypeError:
+        return False
+    except ValueError:
+        size = getattr(value, "size", None)
+        if isinstance(size, int):
+            return size == 0
+        return False
+
+
+def _normalize_id_list(word_ids):
+    if word_ids is None:
+        return []
+
+    if isinstance(word_ids, (str, bytes)):
+        return [word_ids]
+
+    try:
+        return list(word_ids)
+    except TypeError:
+        return [word_ids]
+
+
 def _acquire_lock(lock_key: str) -> str | None:
     token = uuid.uuid4().hex
     if cache.add(lock_key, token, timeout=_LOCK_TIMEOUT_SECONDS):
@@ -40,13 +97,18 @@ def _release_lock(lock_key: str, token: str | None) -> None:
 
 
 def _queue_embedding_refresh(word_ids):
-    if not word_ids:
+    ids = _normalize_id_list(word_ids)
+    if not ids:
         return
 
     from ...tasks import refresh_word_embedding
 
-    ids = [str(word_id) for word_id in word_ids]
-    transaction.on_commit(lambda ids=ids: [refresh_word_embedding.delay(word_id) for word_id in ids])
+    transaction.on_commit(
+        lambda ids=ids: [
+            refresh_word_embedding.delay(str(word_id))
+            for word_id in ids
+        ]
+    )
 
 
 def _prefetched_wotd_queryset():
@@ -206,10 +268,12 @@ def generate_word_of_the_day(date=None):
             used_on=target_date,
         )
 
-        if getattr(word, "embedding", None) in (None, [], {}):
+        if _is_missing_embedding(getattr(word, "embedding", None)):
             _queue_embedding_refresh([word.pk])
 
         return _prefetched_wotd_queryset().get(pk=wotd.pk)
 
     finally:
         _release_lock(lock_key, lock_token)
+        
+        

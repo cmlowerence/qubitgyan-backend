@@ -20,6 +20,63 @@ DEFAULT_RELATED_IMPORT_LIMIT = 4
 DEFAULT_RELATED_IMPORT_DEPTH = 1
 
 
+def _has_items(value) -> bool:
+    if value is None:
+        return False
+
+    if isinstance(value, str):
+        return bool(value.strip())
+
+    size = getattr(value, "size", None)
+    if isinstance(size, int):
+        return size > 0
+
+    try:
+        return len(value) > 0
+    except TypeError:
+        return bool(value)
+    except ValueError:
+        size = getattr(value, "size", None)
+        if isinstance(size, int):
+            return size > 0
+        return True
+
+
+def _as_list(value):
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, tuple):
+        return list(value)
+
+    if isinstance(value, set):
+        return list(value)
+
+    if isinstance(value, str):
+        return [value]
+
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
+def _payload_has_content(payload) -> bool:
+    if payload is None:
+        return False
+
+    if isinstance(payload, dict):
+        return any(
+            _has_items(payload.get(key))
+            for key in ("phonetic_text", "pronunciations", "meanings", "thesaurus")
+        )
+
+    return _has_items(payload)
+
+
 def _prefetched_word(word: Word) -> Word:
     return (
         Word.objects.prefetch_related(
@@ -90,21 +147,21 @@ def _merge_payloads(*payloads):
     }
 
     for payload in payloads:
-        if not payload:
+        if not _payload_has_content(payload):
             continue
 
         if not merged["phonetic_text"] and payload.get("phonetic_text"):
             merged["phonetic_text"] = payload["phonetic_text"]
 
-        merged["pronunciations"].extend(payload.get("pronunciations", []))
-        merged["meanings"].extend(payload.get("meanings", []))
-        merged["thesaurus"].extend(payload.get("thesaurus", []))
+        merged["pronunciations"].extend(_as_list(payload.get("pronunciations")))
+        merged["meanings"].extend(_as_list(payload.get("meanings")))
+        merged["thesaurus"].extend(_as_list(payload.get("thesaurus")))
 
     pronunciation_pairs = unique_list(
         [
             (item.get("audio_url", ""), item.get("region", "GEN"))
             for item in merged["pronunciations"]
-            if item.get("audio_url")
+            if isinstance(item, dict) and item.get("audio_url")
         ]
     )
     merged["pronunciations"] = [{"audio_url": url, "region": region} for url, region in pronunciation_pairs]
@@ -117,7 +174,7 @@ def _merge_payloads(*payloads):
                 item.get("example", "") or "",
             )
             for item in merged["meanings"]
-            if item.get("definition")
+            if isinstance(item, dict) and item.get("definition")
         ]
     )
     merged["meanings"] = [
@@ -132,7 +189,7 @@ def _merge_payloads(*payloads):
                 (item.get("relation_type") or "SYN").upper(),
             )
             for item in merged["thesaurus"]
-            if item.get("related_word_text")
+            if isinstance(item, dict) and item.get("related_word_text")
         ]
     )
     merged["thesaurus"] = [
@@ -145,9 +202,9 @@ def _merge_payloads(*payloads):
 
 def _payload_sources(fda_payload, mw_dict_payload, mw_thes_payload):
     sources = set()
-    if fda_payload:
+    if _payload_has_content(fda_payload):
         sources.add("FDA")
-    if mw_dict_payload or mw_thes_payload:
+    if _payload_has_content(mw_dict_payload) or _payload_has_content(mw_thes_payload):
         sources.add("MW")
     return sources
 
@@ -227,6 +284,9 @@ def _upsert_related_data(word: Word, payload: dict, payload_sources: Iterable[st
 
     new_meanings = []
     for item in payload.get("meanings", []):
+        if not isinstance(item, dict):
+            continue
+
         key = (item["part_of_speech"], item["definition"], item.get("example") or "")
         if key not in existing_meanings:
             new_meanings.append(Meaning(word=word, **item))
@@ -242,6 +302,9 @@ def _upsert_related_data(word: Word, payload: dict, payload_sources: Iterable[st
 
     new_pronunciations = []
     for item in payload.get("pronunciations", []):
+        if not isinstance(item, dict):
+            continue
+
         key = (item["audio_url"], item["region"])
         if key not in existing_pronunciations:
             new_pronunciations.append(Pronunciation(word=word, **item))
@@ -257,6 +320,9 @@ def _upsert_related_data(word: Word, payload: dict, payload_sources: Iterable[st
 
     new_thesaurus = []
     for item in payload.get("thesaurus", []):
+        if not isinstance(item, dict):
+            continue
+
         text = normalize_text(item["related_word_text"])
         rel = (item.get("relation_type") or "SYN").upper()
         key = (text, rel)
@@ -301,11 +367,7 @@ def _fetch_remote_payload(word_query: str, language: str):
     merged = _merge_payloads(fda_payload, mw_dict_payload, mw_thes_payload)
 
     suggestions = unique_list(
-        [
-            *(fda_suggestions or []),
-            *(mw_dict_suggestions or []),
-            *(mw_thes_suggestions or []),
-        ]
+        _as_list(fda_suggestions) + _as_list(mw_dict_suggestions) + _as_list(mw_thes_suggestions)
     )
 
     sources = _payload_sources(fda_payload, mw_dict_payload, mw_thes_payload)
@@ -374,7 +436,7 @@ def enrich_existing_word_from_remote(
 ) -> bool:
     merged, _, sources, _, _, _ = _fetch_remote_payload(word.text, language)
 
-    if not (merged["phonetic_text"] or merged["pronunciations"] or merged["meanings"] or merged["thesaurus"]):
+    if not _payload_has_content(merged):
         return False
 
     _upsert_related_data(word, merged, sources)
@@ -443,14 +505,14 @@ def fetch_and_store_word(
             )
         elif _should_enrich(existing):
             _queue_enrichment(existing.pk, language)
-        elif getattr(existing, "embedding", None) in (None, [], {}):
+        elif not _has_items(getattr(existing, "embedding", None)):
             _queue_embedding_refresh(existing.pk)
 
         return _prefetched_word(existing), []
 
     merged, suggestions, sources, fda, mw_dict, mw_thes = _fetch_remote_payload(word_query, language)
 
-    if not fda and not mw_dict and not mw_thes:
+    if not (_payload_has_content(fda) or _payload_has_content(mw_dict) or _payload_has_content(mw_thes)):
         return None, suggestions
 
     difficulty = calculate_difficulty_score(
@@ -548,3 +610,5 @@ def prime_remote_dictionary_inventory(
             imported.append(word)
 
     return imported
+    
+    

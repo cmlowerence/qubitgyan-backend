@@ -26,6 +26,63 @@ logger = logging.getLogger(__name__)
 _LOCK_TIMEOUT_SECONDS = 60
 
 
+def _has_items(value) -> bool:
+    if value is None:
+        return False
+
+    if isinstance(value, str):
+        return bool(value.strip())
+
+    size = getattr(value, "size", None)
+    if isinstance(size, int):
+        return size > 0
+
+    try:
+        return len(value) > 0
+    except TypeError:
+        return bool(value)
+    except ValueError:
+        size = getattr(value, "size", None)
+        if isinstance(size, int):
+            return size > 0
+        return True
+
+
+def _is_missing_embedding(value) -> bool:
+    if value is None:
+        return True
+
+    if isinstance(value, str):
+        return not value.strip()
+
+    size = getattr(value, "size", None)
+    if isinstance(size, int):
+        return size == 0
+
+    try:
+        return len(value) == 0
+    except TypeError:
+        return False
+    except ValueError:
+        size = getattr(value, "size", None)
+        if isinstance(size, int):
+            return size == 0
+        return False
+
+
+def _normalize_id_list(word_ids):
+    if word_ids is None:
+        return []
+
+    if isinstance(word_ids, (str, bytes)):
+        return [word_ids]
+
+    try:
+        return list(word_ids)
+    except TypeError:
+        return [word_ids]
+
+
 def _acquire_lock(lock_key: str):
     token = uuid.uuid4().hex
     if cache.add(lock_key, token, timeout=_LOCK_TIMEOUT_SECONDS):
@@ -41,7 +98,8 @@ def _release_lock(lock_key: str, token: str | None):
 
 
 def _queue_embedding_refresh(word_ids):
-    if not word_ids:
+    ids = _normalize_id_list(word_ids)
+    if not ids:
         return
 
     if not settings.ENABLE_ASYNC_TASKS:
@@ -50,12 +108,10 @@ def _queue_embedding_refresh(word_ids):
 
     from ...tasks import refresh_word_embedding
 
-    ids = [str(word_id) for word_id in word_ids]
-
     def _dispatch(ids_to_dispatch):
         for word_id in ids_to_dispatch:
             try:
-                refresh_word_embedding.delay(word_id)
+                refresh_word_embedding.delay(str(word_id))
             except Exception as exc:
                 logger.warning(
                     "Failed to dispatch refresh_word_embedding task for word_id=%s: %s",
@@ -104,7 +160,10 @@ def _active_word_queryset(language: str = "en"):
             pronunciation_count=Count("pronunciations", distinct=True),
             thesaurus_count=Count("thesaurus_entries", distinct=True),
         )
-        .filter(meaning_count__gte=MIN_MEANINGS_FOR_SELECTION, difficulty_score__gte=PRACTICE_MIN_DIFFICULTY_SCORE)
+        .filter(
+            meaning_count__gte=MIN_MEANINGS_FOR_SELECTION,
+            difficulty_score__gte=PRACTICE_MIN_DIFFICULTY_SCORE,
+        )
         .order_by("-difficulty_score", "-meaning_count", "-thesaurus_count", "-created_at")
     )
 
@@ -219,7 +278,7 @@ def generate_daily_practice_set(
         )
 
         missing_embedding_ids = [
-            word.pk for word in selected if getattr(word, "embedding", None) in (None, [], {})
+            word.pk for word in selected if _is_missing_embedding(getattr(word, "embedding", None))
         ]
         _queue_embedding_refresh(missing_embedding_ids)
 
@@ -227,4 +286,4 @@ def generate_daily_practice_set(
 
     finally:
         _release_lock(lock_key, lock_token)
-
+        
