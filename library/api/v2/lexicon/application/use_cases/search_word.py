@@ -1,9 +1,11 @@
 # qubitgyan-backend/library/api/v2/lexicon/application/use_cases/search_word.py
 
 import logging
+import uuid
 from typing import Iterable
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 ENRICHMENT_COOLDOWN_HOURS = 24
 DEFAULT_RELATED_IMPORT_LIMIT = 4
 DEFAULT_RELATED_IMPORT_DEPTH = 1
+_BOOTSTRAP_LOCK_TIMEOUT_SECONDS = 180
 
 
 def _has_items(value) -> bool:
@@ -91,7 +94,33 @@ def _prefetched_word(word: Word) -> Word:
 
 def _queue_enrichment(word_id, language: str):
     if not settings.ENABLE_ASYNC_TASKS:
-        logger.warning("Skipping enrich_word_record task dispatch because async tasks are disabled.")
+        try:
+            word = Word.objects.prefetch_related(
+                "categories",
+                "pronunciations",
+                "meanings",
+                "thesaurus_entries",
+            ).get(pk=word_id)
+        except Word.DoesNotExist:
+            return
+
+        try:
+            enriched = enrich_existing_word_from_remote(
+                word,
+                language,
+                import_related=True,
+                related_depth=DEFAULT_RELATED_IMPORT_DEPTH,
+                related_limit=DEFAULT_RELATED_IMPORT_LIMIT,
+            )
+            if enriched or not _has_items(getattr(word, "embedding", None)):
+                _queue_embedding_refresh(word.pk)
+        except Exception as exc:
+            logger.warning(
+                "Failed to enrich word synchronously for word_id=%s language=%s: %s",
+                word_id,
+                language,
+                exc,
+            )
         return
 
     from ...tasks import enrich_word_record
@@ -110,9 +139,34 @@ def _queue_enrichment(word_id, language: str):
     transaction.on_commit(_dispatch)
 
 
+def _refresh_embedding_sync(word: Word) -> None:
+    from ...application.utils.embeddings import build_word_embedding_text, encode_text_to_vector
+
+    embedding_text = build_word_embedding_text(word)
+    vector = encode_text_to_vector(embedding_text)
+    Word.objects.filter(pk=word.pk).update(embedding=vector if any(vector) else None)
+
+
 def _queue_embedding_refresh(word_id):
     if not settings.ENABLE_ASYNC_TASKS:
-        logger.warning("Skipping refresh_word_embedding task dispatch because async tasks are disabled.")
+        try:
+            word = Word.objects.prefetch_related(
+                "categories",
+                "pronunciations",
+                "meanings",
+                "thesaurus_entries",
+            ).get(pk=word_id)
+        except Word.DoesNotExist:
+            return
+
+        try:
+            _refresh_embedding_sync(word)
+        except Exception as exc:
+            logger.warning(
+                "Failed to refresh embedding synchronously for word_id=%s: %s",
+                word_id,
+                exc,
+            )
         return
 
     from ...tasks import refresh_word_embedding
@@ -574,7 +628,7 @@ def prime_remote_dictionary_inventory(
     *,
     seed_words: Iterable[str] | None = None,
     language: str = "en",
-    limit: int = 8,
+    limit: int = 20,
     related_depth: int = DEFAULT_RELATED_IMPORT_DEPTH,
     related_limit: int = DEFAULT_RELATED_IMPORT_LIMIT,
 ):
@@ -610,5 +664,83 @@ def prime_remote_dictionary_inventory(
             imported.append(word)
 
     return imported
+
+
+def _bootstrap_lock_key(date_value, language: str = "en") -> str:
+    date_part = getattr(date_value, "isoformat", lambda: str(date_value))()
+    return f"lock:lexicon:bootstrap:{language}:{date_part}"
+
+
+def _acquire_bootstrap_lock(lock_key: str) -> str | None:
+    token = uuid.uuid4().hex
+    if cache.add(lock_key, token, timeout=_BOOTSTRAP_LOCK_TIMEOUT_SECONDS):
+        return token
+    return None
+
+
+def _release_bootstrap_lock(lock_key: str, token: str | None) -> None:
+    if token and cache.get(lock_key) == token:
+        cache.delete(lock_key)
+
+
+def bootstrap_daily_lexicon(
+    date=None,
+    *,
+    language: str = "en",
+    practice_count: int = 18,
+    prime_limit: int = 20,
+    related_depth: int = 2,
+    related_limit: int = 6,
+):
+    from ...application.constants import PRACTICE_MIN_COUNT
+    from .generate_daily_set import generate_daily_practice_set
+    from .generate_wotd import generate_word_of_the_day
+    from ...models import DailyPracticeSet, WordOfTheDay
+    from django.utils import timezone
+
+    target_date = date or timezone.localdate()
+    lock_key = _bootstrap_lock_key(target_date, language=language)
+    token = _acquire_bootstrap_lock(lock_key)
+
+    if token is None:
+        return {
+            "imported": [],
+            "wotd": generate_word_of_the_day(date=target_date),
+            "practice_set": generate_daily_practice_set(
+                date=target_date,
+                count=max(practice_count, PRACTICE_MIN_COUNT),
+                seed_top_up=False,
+            ),
+        }
+
+    try:
+        imported = prime_remote_dictionary_inventory(
+            language=language,
+            limit=max(prime_limit, practice_count, PRACTICE_MIN_COUNT),
+            related_depth=related_depth,
+            related_limit=related_limit,
+        )
+
+        wotd = generate_word_of_the_day(date=target_date)
+        try:
+            practice_set = generate_daily_practice_set(
+                date=target_date,
+                count=max(practice_count, PRACTICE_MIN_COUNT),
+                seed_top_up=False,
+            )
+        except ValueError:
+            practice_set = generate_daily_practice_set(
+                date=target_date,
+                count=max(practice_count, PRACTICE_MIN_COUNT),
+                seed_top_up=True,
+            )
+
+        return {
+            "imported": imported,
+            "wotd": wotd,
+            "practice_set": practice_set,
+        }
+    finally:
+        _release_bootstrap_lock(lock_key, token)
     
     

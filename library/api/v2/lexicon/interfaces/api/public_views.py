@@ -9,11 +9,9 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ...application.constants import TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
+from ...application.constants import DEFAULT_PRACTICE_COUNT, TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
 from ...application.utils.embeddings import search_words_by_similarity
-from ...application.use_cases.generate_daily_set import generate_daily_practice_set
-from ...application.use_cases.generate_wotd import generate_word_of_the_day
-from ...application.use_cases.search_word import fetch_and_store_word
+from ...application.use_cases.search_word import bootstrap_daily_lexicon, fetch_and_store_word
 from ...models import Word
 from ...serializers import DailyPracticeSetReadSerializer, WordOfTheDayReadSerializer, WordReadSerializer
 
@@ -94,7 +92,11 @@ class WordSearchView(APIView):
 class DailyPracticeSetView(APIView):
     def get(self, request):
         try:
-            practice_set = generate_daily_practice_set(date=timezone.localdate(), seed_top_up=True)
+            result = bootstrap_daily_lexicon(
+                date=timezone.localdate(),
+                practice_count=DEFAULT_PRACTICE_COUNT,
+            )
+            practice_set = result["practice_set"]
         except ValueError as exc:
             return Response(
                 {"error": str(exc)},
@@ -110,7 +112,11 @@ class DailyPracticeSetView(APIView):
 class WordOfTheDayView(APIView):
     def get(self, request):
         try:
-            wotd = generate_word_of_the_day()
+            result = bootstrap_daily_lexicon(
+                date=timezone.localdate(),
+                practice_count=DEFAULT_PRACTICE_COUNT,
+            )
+            wotd = result["wotd"]
             return Response(
                 WordOfTheDayReadSerializer(wotd).data,
                 status=status.HTTP_200_OK,

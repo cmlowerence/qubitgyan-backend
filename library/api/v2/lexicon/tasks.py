@@ -60,8 +60,8 @@ def prime_lexicon_inventory_job(self):
     from .application.use_cases.search_word import prime_remote_dictionary_inventory
 
     imported = prime_remote_dictionary_inventory(
-        limit=NIGHTLY_IMPORT_SEED_LIMIT,
-        related_depth=1,
+        limit=max(NIGHTLY_IMPORT_SEED_LIMIT, 20),
+        related_depth=2,
         related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
     )
     return [str(word.pk) for word in imported]
@@ -79,23 +79,17 @@ def generate_daily_practice_set_job(self, seed_top_up: bool = True):
 def run_midnight_lexicon_pipeline(self):
     from django.utils import timezone
 
-    from .application.use_cases.generate_daily_set import generate_daily_practice_set
-    from .application.use_cases.generate_wotd import generate_word_of_the_day
-    from .application.use_cases.search_word import prime_remote_dictionary_inventory
+    from .application.use_cases.search_word import bootstrap_daily_lexicon
 
     target_date = timezone.localdate()
-    imported = prime_remote_dictionary_inventory(
-        limit=NIGHTLY_IMPORT_SEED_LIMIT,
-        related_depth=1,
-        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
-    )
-    wotd = generate_word_of_the_day(date=target_date)
-    try:
-        practice_set = generate_daily_practice_set(date=target_date, seed_top_up=False)
-    except ValueError:
-        practice_set = generate_daily_practice_set(date=target_date, seed_top_up=True)
+    result = bootstrap_daily_lexicon(date=target_date, practice_count=18)
+    imported = result["imported"]
+    wotd = result["wotd"]
+    practice_set = result["practice_set"]
     return {
         "imported": [str(word.pk) for word in imported],
         "wotd": str(wotd.pk) if wotd else None,
         "practice_set": str(practice_set.pk) if practice_set else None,
     }
+
+

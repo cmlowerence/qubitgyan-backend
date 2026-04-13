@@ -13,12 +13,13 @@ from django.utils import timezone
 from ...application.constants import (
     MIN_MEANINGS_FOR_SELECTION,
     NIGHTLY_IMPORT_RELATED_LIMIT,
+    NIGHTLY_IMPORT_SEED_LIMIT,
     WOTD_BLACKLIST_DAYS,
     WOTD_MIN_DIFFICULTY_SCORE,
 )
 from ...application.utils import normalize_text
 from ...models import Word, WordOfTheDay, WordUsage
-from .search_word import fetch_and_store_word
+from .search_word import fetch_and_store_word, prime_remote_dictionary_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,26 @@ def _queue_embedding_refresh(word_ids):
     if not ids:
         return
 
+    from django.conf import settings
+
+    if not settings.ENABLE_ASYNC_TASKS:
+        from ...application.utils.embeddings import build_word_embedding_text, encode_text_to_vector
+
+        for word_id in ids:
+            try:
+                word = Word.objects.prefetch_related(
+                    "categories",
+                    "pronunciations",
+                    "meanings",
+                    "thesaurus_entries",
+                ).get(pk=word_id)
+            except Word.DoesNotExist:
+                continue
+
+            vector = encode_text_to_vector(build_word_embedding_text(word))
+            Word.objects.filter(pk=word.pk).update(embedding=vector if any(vector) else None)
+        return
+
     from ...tasks import refresh_word_embedding
 
     transaction.on_commit(
@@ -161,47 +182,22 @@ def _candidate_queryset():
 
 
 def _top_up_with_sophisticated_seeds(blacklist_ids, rng):
-    existing_texts = {
-        normalize_text(text)
-        for text in Word.objects.filter(language="en", is_active=True).values_list("text", flat=True)
-    }
-    seeds = [normalize_text(word) for word in [
-        "aberration", "benevolent", "capricious", "dichotomy", "ephemeral",
-        "fastidious", "garrulous", "harangue", "iconoclast", "juxtapose",
-        "laconic", "maverick", "nebulous", "obfuscate", "paradigm",
-        "quixotic", "resilient", "sycophant", "trepidation", "ubiquitous",
-        "vacillate", "xenophobia", "zealous", "alacrity", "bellicose",
-        "conundrum", "deleterious", "enervate", "fortuitous", "gratuitous",
-        "hegemony", "impetuous", "judicious", "kaleidoscope", "loquacious",
-        "meticulous", "nonchalant", "obstinate", "perfunctory", "reticent",
-        "scrupulous", "tangible", "unfettered", "vindicate", "winsome",
-        "yearning", "zephyr", "ascetic", "catharsis", "deference",
-        "equanimity", "fervent", "gregarious", "halcyon", "inscrutable",
-        "juxtaposition", "knavish", "legitimate", "melancholy", "nostalgic",
-    ] if len(normalize_text(word)) >= 8]
-    rng.shuffle(seeds)
+    prime_remote_dictionary_inventory(
+        language="en",
+        limit=max(NIGHTLY_IMPORT_SEED_LIMIT, 20),
+        related_depth=2,
+        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+    )
 
-    for seed in seeds:
-        if seed in existing_texts:
-            continue
+    candidates = list(
+        _candidate_queryset()
+        .exclude(id__in=blacklist_ids)
+        .only("id", "text", "difficulty_score", "embedding")[:200]
+    )
+    if not candidates:
+        return None
 
-        new_word, _ = fetch_and_store_word(
-            seed,
-            "en",
-            increment_search_count=False,
-            import_related=True,
-            related_depth=1,
-            related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
-            force_enrich=True,
-        )
-        if (
-            new_word
-            and new_word.pk not in blacklist_ids
-            and new_word.is_sophisticated
-        ):
-            return new_word
-
-    return None
+    return rng.choice(candidates)
 
 
 @transaction.atomic
@@ -220,39 +216,24 @@ def generate_word_of_the_day(date=None):
             return existing
 
         blacklist_ids = set(_recent_blacklist_ids(target_date, WOTD_BLACKLIST_DAYS))
-        previously_used_ids = _previously_used_ids("WOTD")
 
-        candidates = list(_candidate_queryset()[:150])
-        fresh_candidates = [word for word in candidates if word.pk not in previously_used_ids and word.pk not in blacklist_ids]
-        stale_candidates = [word for word in candidates if word.pk in previously_used_ids and word.pk not in blacklist_ids]
-        fallback_candidates = [word for word in candidates if word.pk in blacklist_ids]
+        candidates = list(_candidate_queryset().exclude(id__in=blacklist_ids)[:200])
+        if not candidates:
+            prime_remote_dictionary_inventory(
+                language="en",
+                limit=max(NIGHTLY_IMPORT_SEED_LIMIT, 20),
+                related_depth=2,
+                related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+            )
+            candidates = list(_candidate_queryset().exclude(id__in=blacklist_ids)[:200])
 
-        word = None
-        for pool in (fresh_candidates, stale_candidates, fallback_candidates):
-            if pool:
-                word = rng.choice(pool)
-                break
+        word = rng.choice(candidates) if candidates else None
 
         if not word:
             word = _top_up_with_sophisticated_seeds(blacklist_ids, rng)
 
         if not word:
-            fallback = list(
-                Word.objects.filter(language="en", is_active=True)
-                .annotate(
-                    meaning_count=Count("meanings", distinct=True),
-                    pronunciation_count=Count("pronunciations", distinct=True),
-                    thesaurus_count=Count("thesaurus_entries", distinct=True),
-                )
-                .filter(meaning_count__gte=MIN_MEANINGS_FOR_SELECTION)
-                .exclude(id__in=blacklist_ids)
-                .only("id", "text", "difficulty_score", "embedding")
-                .order_by("-difficulty_score", "-created_at")[:100]
-            )
-            word = rng.choice(fallback) if fallback else None
-
-        if not word:
-            raise ValueError("Unable to generate a word of the day.")
+            raise ValueError("Unable to generate a word of the day without repeating the last 15 days.")
 
         try:
             wotd, _ = WordOfTheDay.objects.update_or_create(date=target_date, defaults={"word": word})
@@ -262,7 +243,8 @@ def generate_word_of_the_day(date=None):
                 wotd.word = word
                 wotd.save(update_fields=["word"])
 
-        WordUsage.objects.get_or_create(
+        WordUsage.objects.filter(usage_type="WOTD", used_on=target_date).delete()
+        WordUsage.objects.create(
             word=word,
             usage_type="WOTD",
             used_on=target_date,

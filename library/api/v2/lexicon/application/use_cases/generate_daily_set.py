@@ -14,6 +14,8 @@ from django.utils import timezone
 from ...application.constants import (
     DEFAULT_PRACTICE_COUNT,
     MIN_MEANINGS_FOR_SELECTION,
+    NIGHTLY_IMPORT_RELATED_LIMIT,
+    NIGHTLY_IMPORT_SEED_LIMIT,
     PRACTICE_BLACKLIST_DAYS,
     PRACTICE_MAX_COUNT,
     PRACTICE_MIN_COUNT,
@@ -103,7 +105,21 @@ def _queue_embedding_refresh(word_ids):
         return
 
     if not settings.ENABLE_ASYNC_TASKS:
-        logger.warning("Skipping embedding refresh task dispatch because async tasks are disabled.")
+        from ...application.utils.embeddings import build_word_embedding_text, encode_text_to_vector
+
+        for word_id in ids:
+            try:
+                word = Word.objects.prefetch_related(
+                    "categories",
+                    "pronunciations",
+                    "meanings",
+                    "thesaurus_entries",
+                ).get(pk=word_id)
+            except Word.DoesNotExist:
+                continue
+
+            vector = encode_text_to_vector(build_word_embedding_text(word))
+            Word.objects.filter(pk=word.pk).update(embedding=vector if any(vector) else None)
         return
 
     from ...tasks import refresh_word_embedding
@@ -172,70 +188,49 @@ def _top_up_seed_words(minimum_count: int, language: str = "en"):
     if Word.objects.filter(language=language, is_active=True).count() >= minimum_count:
         return
 
-    from .search_word import fetch_and_store_word
+    from .search_word import prime_remote_dictionary_inventory
 
-    for seed in (
-        "aberration", "benevolent", "capricious", "dichotomy", "ephemeral",
-        "fastidious", "garrulous", "harangue", "iconoclast", "juxtapose",
-        "laconic", "maverick", "nebulous", "obfuscate", "paradigm",
-        "quixotic", "resilient", "sycophant", "trepidation", "ubiquitous",
-    ):
-        if Word.objects.filter(language=language, is_active=True).count() >= minimum_count:
-            break
-
-        try:
-            fetch_and_store_word(
-                seed,
-                language=language,
-                increment_search_count=False,
-                import_related=True,
-                related_depth=1,
-                related_limit=4,
-                force_enrich=True,
-            )
-        except Exception as exc:
-            logger.warning("Seed top-up failed for word=%s language=%s: %s", seed, language, exc)
+    prime_remote_dictionary_inventory(
+        language=language,
+        limit=max(minimum_count, NIGHTLY_IMPORT_SEED_LIMIT),
+        related_depth=2,
+        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+    )
 
 
 def _select_practice_words(today, count: int):
-    base_words = list(_active_word_queryset(language="en")[:150])
+    blacklist_ids = set(_recent_blacklist_ids(today, PRACTICE_BLACKLIST_DAYS))
+
+    base_words = list(_active_word_queryset(language="en").exclude(id__in=blacklist_ids)[:200])
     if len(base_words) < count:
         base_words = list(
             Word.objects.filter(language="en", is_active=True)
+            .exclude(id__in=blacklist_ids)
             .annotate(
                 meaning_count=Count("meanings", distinct=True),
                 pronunciation_count=Count("pronunciations", distinct=True),
                 thesaurus_count=Count("thesaurus_entries", distinct=True),
             )
-            .order_by("-difficulty_score", "-created_at")[:150]
+            .order_by("-difficulty_score", "-created_at")[:200]
         )
 
     if len(base_words) < count:
-        raise ValueError("Not enough words available to generate a practice set.")
+        from .search_word import prime_remote_dictionary_inventory
 
-    blacklist_ids = set(_recent_blacklist_ids(today, PRACTICE_BLACKLIST_DAYS))
-    previously_used_ids = _previously_used_ids("PRACTICE")
+        prime_remote_dictionary_inventory(
+            language="en",
+            limit=max(count, NIGHTLY_IMPORT_SEED_LIMIT),
+            related_depth=2,
+            related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+        )
+        base_words = list(_active_word_queryset(language="en").exclude(id__in=blacklist_ids)[:200])
 
-    fresh_words = [word for word in base_words if word.pk not in previously_used_ids and word.pk not in blacklist_ids]
-    stale_words = [word for word in base_words if word.pk in previously_used_ids and word.pk not in blacklist_ids]
-    fallback_words = [word for word in base_words if word.pk in blacklist_ids]
+    if len(base_words) < count:
+        raise ValueError("Unable to build a complete practice set without repeating the last 15 days.")
 
     rng = random.Random(str(today))
-    rng.shuffle(fresh_words)
-    rng.shuffle(stale_words)
-    rng.shuffle(fallback_words)
-
-    selected = []
-    for pool in (fresh_words, stale_words, fallback_words):
-        needed = count - len(selected)
-        if needed <= 0:
-            break
-        selected.extend(pool[:needed])
-
-    if len(selected) < count:
-        raise ValueError("Unable to build a complete practice set.")
-
-    return selected
+    rng.shuffle(base_words)
+    return base_words[:count]
 
 
 @transaction.atomic
@@ -272,6 +267,7 @@ def generate_daily_practice_set(
 
         practice_set.words.set(selected)
 
+        WordUsage.objects.filter(usage_type="PRACTICE", used_on=today).delete()
         WordUsage.objects.bulk_create(
             [WordUsage(word=word, usage_type="PRACTICE", used_on=today) for word in selected],
             ignore_conflicts=True,

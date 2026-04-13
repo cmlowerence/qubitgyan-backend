@@ -1,4 +1,3 @@
-
 # qubitgyan-backend/library/api/v2/lexicon/interfaces/api/manager_views.py
 
 from django.db import transaction
@@ -64,6 +63,10 @@ def _parse_limit(value, default=100, maximum=500):
     except (TypeError, ValueError):
         return default
     return max(1, min(limit, maximum))
+
+def _replace_usages_for_date(date_value, usage_type: str):
+    WordUsage.objects.filter(used_on=date_value, usage_type=usage_type).delete()
+
 
 
 class WordListView(APIView):
@@ -267,12 +270,13 @@ class ManualWordOfTheDayView(APIView):
         serializer = WordOfTheDayWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        _replace_usages_for_date(serializer.validated_data["date"], "WOTD")
         wotd, _ = WordOfTheDay.objects.update_or_create(
             date=serializer.validated_data["date"],
             defaults={"word": serializer.validated_data["word"]},
         )
 
-        WordUsage.objects.get_or_create(
+        WordUsage.objects.create(
             word=serializer.validated_data["word"],
             usage_type="WOTD",
             used_on=serializer.validated_data["date"],
@@ -296,6 +300,7 @@ class ManualDailyPracticeSetView(APIView):
         serializer = DailyPracticeSetWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        _replace_usages_for_date(serializer.validated_data["date"], "PRACTICE")
         practice_set, _ = DailyPracticeSet.objects.get_or_create(date=serializer.validated_data["date"])
         practice_set.words.set(serializer.validated_data["words"])
 
