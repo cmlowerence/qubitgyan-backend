@@ -628,9 +628,11 @@ def prime_remote_dictionary_inventory(
     *,
     seed_words: Iterable[str] | None = None,
     language: str = "en",
-    limit: int = 20,
-    related_depth: int = DEFAULT_RELATED_IMPORT_DEPTH,
-    related_limit: int = DEFAULT_RELATED_IMPORT_LIMIT,
+    limit: int = 1,
+    related_depth: int = 0,
+    related_limit: int = 0,
+    import_related: bool = False,
+    force_enrich: bool = False,
 ):
     from ...application.constants import SEED_WORDS
 
@@ -654,10 +656,10 @@ def prime_remote_dictionary_inventory(
             seed,
             language=language,
             increment_search_count=False,
-            import_related=True,
+            import_related=import_related,
             related_depth=related_depth,
             related_limit=related_limit,
-            force_enrich=True,
+            force_enrich=force_enrich,
             visited=visited,
         )
         if word:
@@ -683,64 +685,138 @@ def _release_bootstrap_lock(lock_key: str, token: str | None) -> None:
         cache.delete(lock_key)
 
 
+def _bootstrap_seed_order(target_date, language: str = "en"):
+    import random
+    from ...application.constants import SEED_WORDS
+
+    rng = random.Random(f"{language}:{target_date.isoformat()}")
+    seeds = [normalize_text(seed) for seed in SEED_WORDS if normalize_text(seed)]
+    rng.shuffle(seeds)
+    return seeds
+
+
+def _bootstrap_seed_cursor_key(target_date, language: str = "en") -> str:
+    return f"lexicon:bootstrap:cursor:{language}:{target_date.isoformat()}"
+
+
+def _bootstrap_ready_key(target_date, language: str = "en") -> str:
+    return f"lexicon:bootstrap:ready:{language}:{target_date.isoformat()}"
+
+
 def bootstrap_daily_lexicon(
     date=None,
     *,
     language: str = "en",
     practice_count: int = 18,
-    prime_limit: int = 20,
-    related_depth: int = 2,
-    related_limit: int = 6,
 ):
     from ...application.constants import PRACTICE_MIN_COUNT
     from .generate_daily_set import generate_daily_practice_set
     from .generate_wotd import generate_word_of_the_day
-    from ...models import DailyPracticeSet, WordOfTheDay
-    from django.utils import timezone
 
     target_date = date or timezone.localdate()
     lock_key = _bootstrap_lock_key(target_date, language=language)
     token = _acquire_bootstrap_lock(lock_key)
 
     if token is None:
+        existing_wotd = generate_word_of_the_day(date=target_date, allow_prime=False)
+        existing_practice = generate_daily_practice_set(
+            date=target_date,
+            count=max(practice_count, PRACTICE_MIN_COUNT),
+            allow_prime=False,
+        )
+        if existing_wotd and existing_practice:
+            return {
+                "status": "ready",
+                "imported": [],
+                "wotd": existing_wotd,
+                "practice_set": existing_practice,
+            }
         return {
+            "status": "preparing",
+            "ready": False,
+            "wotd": existing_wotd,
+            "practice_set": existing_practice,
             "imported": [],
-            "wotd": generate_word_of_the_day(date=target_date),
-            "practice_set": generate_daily_practice_set(
-                date=target_date,
-                count=max(practice_count, PRACTICE_MIN_COUNT),
-                seed_top_up=False,
-            ),
         }
 
     try:
-        imported = prime_remote_dictionary_inventory(
-            language=language,
-            limit=max(prime_limit, practice_count, PRACTICE_MIN_COUNT),
-            related_depth=related_depth,
-            related_limit=related_limit,
+        ready_key = _bootstrap_ready_key(target_date, language=language)
+        if cache.get(ready_key):
+            return {
+                "status": "ready",
+                "ready": True,
+                "imported": [],
+                "wotd": generate_word_of_the_day(date=target_date, allow_prime=False),
+                "practice_set": generate_daily_practice_set(
+                    date=target_date,
+                    count=max(practice_count, PRACTICE_MIN_COUNT),
+                    allow_prime=False,
+                ),
+            }
+
+        wotd = generate_word_of_the_day(date=target_date, allow_prime=False)
+        practice_set = generate_daily_practice_set(
+            date=target_date,
+            count=max(practice_count, PRACTICE_MIN_COUNT),
+            allow_prime=False,
         )
 
-        wotd = generate_word_of_the_day(date=target_date)
-        try:
-            practice_set = generate_daily_practice_set(
-                date=target_date,
-                count=max(practice_count, PRACTICE_MIN_COUNT),
-                seed_top_up=False,
+        if wotd and practice_set:
+            cache.set(ready_key, True, timeout=48 * 3600)
+            return {
+                "status": "ready",
+                "ready": True,
+                "imported": [],
+                "wotd": wotd,
+                "practice_set": practice_set,
+            }
+
+        seed_order = _bootstrap_seed_order(target_date, language=language)
+        cursor_key = _bootstrap_seed_cursor_key(target_date, language=language)
+        cursor = int(cache.get(cursor_key) or 0)
+
+        if cursor < len(seed_order):
+            seed = seed_order[cursor]
+            cache.set(cursor_key, cursor + 1, timeout=7 * 24 * 3600)
+            imported = prime_remote_dictionary_inventory(
+                seed_words=[seed],
+                language=language,
+                limit=1,
+                related_depth=0,
+                related_limit=0,
+                import_related=False,
+                force_enrich=False,
             )
-        except ValueError:
+        else:
+            imported = []
+
+        if imported:
+            wotd = generate_word_of_the_day(date=target_date, allow_prime=False)
             practice_set = generate_daily_practice_set(
                 date=target_date,
                 count=max(practice_count, PRACTICE_MIN_COUNT),
-                seed_top_up=True,
+                allow_prime=False,
             )
 
+        if wotd and practice_set:
+            cache.set(ready_key, True, timeout=48 * 3600)
+            return {
+                "status": "ready",
+                "ready": True,
+                "imported": imported,
+                "wotd": wotd,
+                "practice_set": practice_set,
+            }
+
         return {
+            "status": "preparing",
+            "ready": False,
             "imported": imported,
             "wotd": wotd,
             "practice_set": practice_set,
+            "seed_cursor": cursor + (1 if imported else 0),
+            "seed_total": len(seed_order),
         }
     finally:
         _release_bootstrap_lock(lock_key, token)
-    
     

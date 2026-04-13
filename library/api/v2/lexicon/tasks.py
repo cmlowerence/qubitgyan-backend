@@ -2,7 +2,10 @@ import logging
 
 from celery import shared_task
 
-from .application.constants import NIGHTLY_IMPORT_RELATED_LIMIT, NIGHTLY_IMPORT_SEED_LIMIT
+from .application.constants import NIGHTLY_IMPORT_RELATED_LIMIT
+from .application.use_cases.generate_daily_set import generate_daily_practice_set
+from .application.use_cases.generate_wotd import generate_word_of_the_day
+from .application.use_cases.search_word import bootstrap_daily_lexicon, prime_remote_dictionary_inventory
 from .application.utils.embeddings import build_word_embedding_text, encode_text_to_vector
 from .models import Word
 
@@ -47,8 +50,8 @@ def enrich_word_record(self, word_id: str, language: str = "en"):
     enriched = enrich_existing_word_from_remote(
         word,
         language,
-        import_related=True,
-        related_depth=1,
+        import_related=False,
+        related_depth=0,
         related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
     )
     refresh_word_embedding.delay(str(word.pk))
@@ -57,39 +60,40 @@ def enrich_word_record(self, word_id: str, language: str = "en"):
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
 def prime_lexicon_inventory_job(self):
-    from .application.use_cases.search_word import prime_remote_dictionary_inventory
-
     imported = prime_remote_dictionary_inventory(
-        limit=max(NIGHTLY_IMPORT_SEED_LIMIT, 20),
-        related_depth=2,
-        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
+        language="en",
+        limit=1,
+        related_depth=0,
+        related_limit=0,
+        import_related=False,
+        force_enrich=False,
     )
     return [str(word.pk) for word in imported]
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
-def generate_daily_practice_set_job(self, seed_top_up: bool = True):
-    from .application.use_cases.generate_daily_set import generate_daily_practice_set
-
-    practice_set = generate_daily_practice_set(seed_top_up=seed_top_up)
+def generate_daily_practice_set_job(self):
+    practice_set = generate_daily_practice_set(allow_prime=False)
     return str(practice_set.pk) if practice_set else None
+
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
+def generate_word_of_the_day_job(self):
+    wotd = generate_word_of_the_day(allow_prime=False)
+    return str(wotd.pk) if wotd else None
 
 
 @shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=3)
 def run_midnight_lexicon_pipeline(self):
     from django.utils import timezone
 
-    from .application.use_cases.search_word import bootstrap_daily_lexicon
-
     target_date = timezone.localdate()
     result = bootstrap_daily_lexicon(date=target_date, practice_count=18)
-    imported = result["imported"]
-    wotd = result["wotd"]
-    practice_set = result["practice_set"]
     return {
-        "imported": [str(word.pk) for word in imported],
-        "wotd": str(wotd.pk) if wotd else None,
-        "practice_set": str(practice_set.pk) if practice_set else None,
+        "status": result.get("status"),
+        "imported": [str(word.pk) for word in result.get("imported", [])],
+        "wotd": str(result["wotd"].pk) if result.get("wotd") else None,
+        "practice_set": str(result["practice_set"].pk) if result.get("practice_set") else None,
     }
-
-
+    
+    

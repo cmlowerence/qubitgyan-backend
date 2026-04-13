@@ -1,5 +1,3 @@
-# qubitgyan-backend/library/api/v2/lexicon/interfaces/api/public_views.py
-
 from copy import deepcopy
 
 from django.core.cache import cache
@@ -9,14 +7,14 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ...application.constants import DEFAULT_PRACTICE_COUNT, TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
-from ...application.utils.embeddings import search_words_by_similarity
+from ...application.constants import TRENDING_CACHE_SECONDS, WORD_CACHE_SECONDS
 from ...application.use_cases.search_word import bootstrap_daily_lexicon, fetch_and_store_word
+from ...application.utils.embeddings import search_words_by_similarity
 from ...models import Word
 from ...serializers import DailyPracticeSetReadSerializer, WordOfTheDayReadSerializer, WordReadSerializer
 
 
-CACHE_VERSION = "v4"
+CACHE_VERSION = "v5"
 SEMANTIC_CACHE_SECONDS = 900
 
 
@@ -91,38 +89,34 @@ class WordSearchView(APIView):
 
 class DailyPracticeSetView(APIView):
     def get(self, request):
-        try:
-            result = bootstrap_daily_lexicon(
-                date=timezone.localdate(),
-                practice_count=DEFAULT_PRACTICE_COUNT,
-            )
-            practice_set = result["practice_set"]
-        except ValueError as exc:
-            return Response(
-                {"error": str(exc)},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        result = bootstrap_daily_lexicon(
+            date=timezone.localdate(),
+            practice_count=18,
+        )
+
+        if result.get("status") != "ready" or not result.get("practice_set"):
+            return Response(result, status=status.HTTP_202_ACCEPTED)
 
         return Response(
-            DailyPracticeSetReadSerializer(practice_set).data,
+            DailyPracticeSetReadSerializer(result["practice_set"]).data,
             status=status.HTTP_200_OK,
         )
 
 
 class WordOfTheDayView(APIView):
     def get(self, request):
-        try:
-            result = bootstrap_daily_lexicon(
-                date=timezone.localdate(),
-                practice_count=DEFAULT_PRACTICE_COUNT,
-            )
-            wotd = result["wotd"]
-            return Response(
-                WordOfTheDayReadSerializer(wotd).data,
-                status=status.HTTP_200_OK,
-            )
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        result = bootstrap_daily_lexicon(
+            date=timezone.localdate(),
+            practice_count=18,
+        )
+
+        if result.get("status") != "ready" or not result.get("wotd"):
+            return Response(result, status=status.HTTP_202_ACCEPTED)
+
+        return Response(
+            WordOfTheDayReadSerializer(result["wotd"]).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class TrendingWordsView(APIView):
@@ -144,5 +138,5 @@ class TrendingWordsView(APIView):
         cache.set(cache_key, data, TRENDING_CACHE_SECONDS)
 
         return Response(data, status=status.HTTP_200_OK)
-    
-    
+        
+        

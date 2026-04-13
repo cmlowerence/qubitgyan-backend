@@ -1,5 +1,3 @@
-# qubitgyan-backend/library/api/v2/lexicon/application/use_cases/generate_daily_set.py
-
 import logging
 import random
 import uuid
@@ -14,8 +12,6 @@ from django.utils import timezone
 from ...application.constants import (
     DEFAULT_PRACTICE_COUNT,
     MIN_MEANINGS_FOR_SELECTION,
-    NIGHTLY_IMPORT_RELATED_LIMIT,
-    NIGHTLY_IMPORT_SEED_LIMIT,
     PRACTICE_BLACKLIST_DAYS,
     PRACTICE_MAX_COUNT,
     PRACTICE_MIN_COUNT,
@@ -28,63 +24,6 @@ logger = logging.getLogger(__name__)
 _LOCK_TIMEOUT_SECONDS = 60
 
 
-def _has_items(value) -> bool:
-    if value is None:
-        return False
-
-    if isinstance(value, str):
-        return bool(value.strip())
-
-    size = getattr(value, "size", None)
-    if isinstance(size, int):
-        return size > 0
-
-    try:
-        return len(value) > 0
-    except TypeError:
-        return bool(value)
-    except ValueError:
-        size = getattr(value, "size", None)
-        if isinstance(size, int):
-            return size > 0
-        return True
-
-
-def _is_missing_embedding(value) -> bool:
-    if value is None:
-        return True
-
-    if isinstance(value, str):
-        return not value.strip()
-
-    size = getattr(value, "size", None)
-    if isinstance(size, int):
-        return size == 0
-
-    try:
-        return len(value) == 0
-    except TypeError:
-        return False
-    except ValueError:
-        size = getattr(value, "size", None)
-        if isinstance(size, int):
-            return size == 0
-        return False
-
-
-def _normalize_id_list(word_ids):
-    if word_ids is None:
-        return []
-
-    if isinstance(word_ids, (str, bytes)):
-        return [word_ids]
-
-    try:
-        return list(word_ids)
-    except TypeError:
-        return [word_ids]
-
-
 def _acquire_lock(lock_key: str):
     token = uuid.uuid4().hex
     if cache.add(lock_key, token, timeout=_LOCK_TIMEOUT_SECONDS):
@@ -93,14 +32,50 @@ def _acquire_lock(lock_key: str):
 
 
 def _release_lock(lock_key: str, token: str | None):
-    if not token:
-        return
-    if cache.get(lock_key) == token:
+    if token and cache.get(lock_key) == token:
         cache.delete(lock_key)
 
 
+def _prefetched_practice_set_queryset():
+    return DailyPracticeSet.objects.prefetch_related(
+        "words__categories",
+        "words__pronunciations",
+        "words__meanings",
+        "words__thesaurus_entries",
+    )
+
+
+def _existing_practice_set(today):
+    return _prefetched_practice_set_queryset().filter(date=today).first()
+
+
+def _recent_blacklist_ids(today, days: int):
+    cutoff = today - timedelta(days=days)
+    return (
+        WordUsage.objects.filter(used_on__gte=cutoff)
+        .values_list("word_id", flat=True)
+        .distinct()
+    )
+
+
+def _candidate_queryset(language: str = "en"):
+    return (
+        Word.objects.filter(language=language, is_active=True)
+        .annotate(
+            meaning_count=Count("meanings", distinct=True),
+            pronunciation_count=Count("pronunciations", distinct=True),
+            thesaurus_count=Count("thesaurus_entries", distinct=True),
+        )
+        .filter(
+            meaning_count__gte=MIN_MEANINGS_FOR_SELECTION,
+            difficulty_score__gte=PRACTICE_MIN_DIFFICULTY_SCORE,
+        )
+        .order_by("-difficulty_score", "-meaning_count", "-thesaurus_count", "-created_at")
+    )
+
+
 def _queue_embedding_refresh(word_ids):
-    ids = _normalize_id_list(word_ids)
+    ids = [str(word_id) for word_id in (word_ids or [])]
     if not ids:
         return
 
@@ -124,126 +99,34 @@ def _queue_embedding_refresh(word_ids):
 
     from ...tasks import refresh_word_embedding
 
-    def _dispatch(ids_to_dispatch):
-        for word_id in ids_to_dispatch:
-            try:
-                refresh_word_embedding.delay(str(word_id))
-            except Exception as exc:
-                logger.warning(
-                    "Failed to dispatch refresh_word_embedding task for word_id=%s: %s",
-                    word_id,
-                    exc,
-                )
-
-    transaction.on_commit(lambda ids=ids: _dispatch(ids))
-
-
-def _recent_blacklist_ids(today, days: int):
-    cutoff = today - timedelta(days=days)
-    return (
-        WordUsage.objects.filter(used_on__gte=cutoff)
-        .values_list("word_id", flat=True)
-        .distinct()
-    )
-
-
-def _previously_used_ids(usage_type: str):
-    return set(
-        WordUsage.objects.filter(usage_type=usage_type)
-        .values_list("word_id", flat=True)
-        .distinct()
-    )
-
-
-def _prefetched_practice_set_queryset():
-    return DailyPracticeSet.objects.prefetch_related(
-        "words__categories",
-        "words__pronunciations",
-        "words__meanings",
-        "words__thesaurus_entries",
-    )
-
-
-def _existing_practice_set(today):
-    return _prefetched_practice_set_queryset().filter(date=today).first()
-
-
-def _active_word_queryset(language: str = "en"):
-    return (
-        Word.objects.filter(language=language, is_active=True)
-        .annotate(
-            meaning_count=Count("meanings", distinct=True),
-            pronunciation_count=Count("pronunciations", distinct=True),
-            thesaurus_count=Count("thesaurus_entries", distinct=True),
-        )
-        .filter(
-            meaning_count__gte=MIN_MEANINGS_FOR_SELECTION,
-            difficulty_score__gte=PRACTICE_MIN_DIFFICULTY_SCORE,
-        )
-        .order_by("-difficulty_score", "-meaning_count", "-thesaurus_count", "-created_at")
-    )
-
-
-def _top_up_seed_words(minimum_count: int, language: str = "en"):
-    if Word.objects.filter(language=language, is_active=True).count() >= minimum_count:
-        return
-
-    from .search_word import prime_remote_dictionary_inventory
-
-    prime_remote_dictionary_inventory(
-        language=language,
-        limit=max(minimum_count, NIGHTLY_IMPORT_SEED_LIMIT),
-        related_depth=2,
-        related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
-    )
+    transaction.on_commit(lambda: [refresh_word_embedding.delay(word_id) for word_id in ids])
 
 
 def _select_practice_words(today, count: int):
     blacklist_ids = set(_recent_blacklist_ids(today, PRACTICE_BLACKLIST_DAYS))
+    candidates = list(_candidate_queryset(language="en").exclude(id__in=blacklist_ids)[:250])
 
-    base_words = list(_active_word_queryset(language="en").exclude(id__in=blacklist_ids)[:200])
-    if len(base_words) < count:
-        base_words = list(
-            Word.objects.filter(language="en", is_active=True)
-            .exclude(id__in=blacklist_ids)
-            .annotate(
-                meaning_count=Count("meanings", distinct=True),
-                pronunciation_count=Count("pronunciations", distinct=True),
-                thesaurus_count=Count("thesaurus_entries", distinct=True),
-            )
-            .order_by("-difficulty_score", "-created_at")[:200]
-        )
-
-    if len(base_words) < count:
-        from .search_word import prime_remote_dictionary_inventory
-
-        prime_remote_dictionary_inventory(
-            language="en",
-            limit=max(count, NIGHTLY_IMPORT_SEED_LIMIT),
-            related_depth=2,
-            related_limit=NIGHTLY_IMPORT_RELATED_LIMIT,
-        )
-        base_words = list(_active_word_queryset(language="en").exclude(id__in=blacklist_ids)[:200])
-
-    if len(base_words) < count:
-        raise ValueError("Unable to build a complete practice set without repeating the last 15 days.")
+    if len(candidates) < count:
+        return []
 
     rng = random.Random(str(today))
-    rng.shuffle(base_words)
-    return base_words[:count]
+    rng.shuffle(candidates)
+    return candidates[:count]
 
 
-@transaction.atomic
 def generate_daily_practice_set(
     date=None,
     count: int = DEFAULT_PRACTICE_COUNT,
-    seed_top_up: bool = False,
+    *,
+    allow_prime: bool = False,
+    prime_batch_size: int = 1,
 ):
     if count < PRACTICE_MIN_COUNT or count > PRACTICE_MAX_COUNT:
-        raise ValueError(f"Practice count must be between {PRACTICE_MIN_COUNT} and {PRACTICE_MAX_COUNT}.")
+        raise ValueError(
+            f"Practice count must be between {PRACTICE_MIN_COUNT} and {PRACTICE_MAX_COUNT}."
+        )
 
     today = date or timezone.localdate()
-
     lock_key = f"lock:practice_set:{today.isoformat()}"
     lock_token = _acquire_lock(lock_key)
 
@@ -255,10 +138,23 @@ def generate_daily_practice_set(
         if existing:
             return existing
 
-        if seed_top_up:
-            _top_up_seed_words(minimum_count=count)
-
         selected = _select_practice_words(today, count=count)
+
+        if len(selected) < count and allow_prime:
+            from .search_word import prime_remote_dictionary_inventory
+
+            prime_remote_dictionary_inventory(
+                language="en",
+                limit=max(1, prime_batch_size),
+                related_depth=0,
+                related_limit=0,
+                import_related=False,
+                force_enrich=False,
+            )
+            selected = _select_practice_words(today, count=count)
+
+        if len(selected) < count:
+            return None
 
         try:
             practice_set, _ = DailyPracticeSet.objects.get_or_create(date=today)
@@ -274,7 +170,7 @@ def generate_daily_practice_set(
         )
 
         missing_embedding_ids = [
-            word.pk for word in selected if _is_missing_embedding(getattr(word, "embedding", None))
+            word.pk for word in selected if not getattr(word, "embedding", None)
         ]
         _queue_embedding_refresh(missing_embedding_ids)
 
@@ -282,4 +178,3 @@ def generate_daily_practice_set(
 
     finally:
         _release_lock(lock_key, lock_token)
-        
